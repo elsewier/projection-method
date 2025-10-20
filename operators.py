@@ -4,7 +4,11 @@ import numpy as np
 from scipy.sparse import kron, csc_matrix, identity as sparse_identity
 from scipy.sparse.linalg import spsolve 
 from bspline_module import bspline_basis_physical, bspline_deriv1_physical, bspline_deriv2_physical, generate_knots_and_colloc_pts
-from grid import create_channel_grid # For testing
+from grid import create_channel_grid 
+
+
+
+
 
 class BSplineOperator:
     def __init__(self, grid, settings):

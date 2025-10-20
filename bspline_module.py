@@ -1,18 +1,9 @@
 """
 2D B-spline operator module
-
-This module uses the recursive Cox-de Boor algorithm for b-spline calculations
-and extends the 1D functionality to support 2D B-spline surfaces through a
-tensor product formulation.
-
-============================
-Ali Yesildag August 25/2025
-============================
 """
 
 import numpy as np
 
-# --- 1D B-spline Helper Functions (Original Module) ---
 
 def generate_knots_and_colloc_pts(p, num_basis, xmin, xmax, stretch_factor=0.0):
     """
@@ -191,113 +182,96 @@ def find_span(x, p, knots, xmin, xmax):
 # --- 2D B-spline Surface Class ---
 
 class BSplineSurface:
-    """
-    A class to represent and evaluate a 2D B-spline surface.
-    """
-    def __init__(self, control_points, p, q, u_domain=(0., 1.), v_domain=(0., 1.)):
+
+
+
+
+    def __init__(self, points, p, q, x, y):
         """
         Initializes a B-spline surface.
 
         Args:
-            control_points (np.ndarray): A NumPy array of control points with shape
-                                         (num_basis_u, num_basis_v, dim).
+            points: this holds the coordinates of our surface (numbasisu, num_basis_v, dim) for now dim = 2
             p (int): Degree in the u-direction.
             q (int): Degree in the v-direction.
-            u_domain (tuple): Physical domain for u, e.g., (umin, umax).
-            v_domain (tuple): Physical domain for v, e.g., (vmin, vmax).
+            x( tuple): Physical domain for u, e.g., (umin, umax).
+            y (tuple): Physical domain for v, e.g., (vmin, vmax).
         """
-        self.control_points = np.array(control_points)
-        if self.control_points.ndim != 3:
-            raise ValueError("control_points must be a 3D array.")
+        self.points = np.array(points)
         self.p = p
         self.q = q
-        self.u_domain = u_domain
-        self.v_domain = v_domain
+        self.x = x
+        self.y = y
         self.num_basis_u = self.control_points.shape[0]
         self.num_basis_v = self.control_points.shape[1]
         self.dim = self.control_points.shape[2]
 
-        # Generate knot vectors
-        self.U_knots, _ = generate_knots_and_colloc_pts(p, self.num_basis_u, 0., 1.)
-        self.V_knots, _ = generate_knots_and_colloc_pts(q, self.num_basis_v, 0., 1.)
+        # first generate knots and colloc points 
+        self.x_knots, _ = generate_knots_and_colloc_pts(p, self.num_basis_u, 0., 1.)
+        self.y_knots, _ = generate_knots_and_colloc_pts(q, self.num_basis_v, 0., 1.)
 
-    def _evaluate_basis_functions(self, u, v, du, dv):
-        """
-        Helper to evaluate all relevant basis functions and their derivatives.
-        """
-        # Find spans
-        u_span = find_span(u, self.p, self.U_knots, self.u_domain[0], self.u_domain[1])
-        v_span = find_span(v, self.q, self.V_knots, self.v_domain[0], self.v_domain[1])
+    def _evaluate_basis_functions(self, x, y, dx, dy):
 
-        # Select the relevant control points
-        P_relevant = self.control_points[u_span - self.p : u_span + 1, 
-                                          v_span - self.q : v_span + 1, :]
+        # we need to find non-zero basis range 
+        x_span = find_span(x, self.p, self.x_knots, self.x[0], self.x[1])
+        y_span = find_span(y, self.q, self.y_knots, self.y[0], self.y[1])
 
-        # Determine which functions to call based on derivative order
-        u_func = {
+        # this is the range that we interested (nonzero ones)
+        points  = self.points[u_span - self.p : u_span + 1, v_span - self.q : v_span + 1, :]
+
+        # get the function name based on input 
+        x_func = {
             0: bspline_basis_physical,
             1: bspline_deriv1_physical,
             2: bspline_deriv2_physical
         }.get(du)
         
-        v_func = {
+        y_func = {
             0: bspline_basis_physical,
             1: bspline_deriv1_physical,
             2: bspline_deriv2_physical
         }.get(dv)
         
-        if u_func is None or v_func is None:
-            raise ValueError("Only 0th, 1st, and 2nd derivatives are supported.")
+        # now we need to evaluate them 
+        N_val   = np.zeros(self.p + 1)
+        M_val   = np.zeros(self.q + 1)
 
-        # Evaluate basis functions in u
-        N_values = np.zeros(self.p + 1)
         for i in range(self.p + 1):
-            j = u_span - self.p + i
-            N_values[i] = u_func(j, self.p, self.U_knots, u, self.u_domain[0], self.u_domain[1])
+            j = u_span - self.p + i 
+            N_val[i] = x_func(j, self.p, self.x_knots, x, self.x[0], self.x[1])
 
-        # Evaluate basis functions in v
-        M_values = np.zeros(self.q + 1)
-        for i in range(self.q + 1):
-            j = v_span - self.q + i
-            M_values[i] = v_func(j, self.q, self.V_knots, v, self.v_domain[0], self.v_domain[1])
-            
-        return N_values, M_values, P_relevant
+        for j in range(self.q + 1):
+            j = y_span - self.q + i 
+            M_val[i] = y_func(j, self.q, self.y_knots, y, self.y[0], self.x[1])
 
-    def evaluate(self, u, v):
-        """
-        Evaluates the surface point S(u, v).
+        return N_val, M_val, points 
 
-        Args:
-            u (float): Parameter in the u-direction.
-            v (float): Parameter in the v-direction.
+    # now we can contruct our 2d bspline 
+    # S(x,y) = sum_i sum_j N_i(x) * M_j(y) * points_ij
+    # evaluate function calculates the value in single point
+    def evaluate(self, x, y):
+        N_val, M_val, points = self._evaluate_basis_functions(x, y, dx = 0, dy = 0)
 
-        Returns:
-            np.ndarray: The evaluated point on the surface.
-        """
-        N_values, M_values, P_relevant = self._evaluate_basis_functions(u, v, du=0, dv=0)
+
+        surface_point = np.zeros(points.shape[2]) # holds the dimension
         
-        # Perform the tensor product summation using np.einsum for clarity and efficiency
-        surface_point = np.einsum('i,j,ijk->k', N_values, M_values, P_relevant)
+        for j in range(M_val.shape[0]):
+            for i in range(N_val.shape[0]):
+                surface_point += N_val[i] * M_val[j] * points[i, j, :]
         return surface_point
 
-    def derivative(self, u, v, du=0, dv=0):
-        """
-        Evaluates the partial derivatives of the surface.
+    # evaluate derivative 
+    def derivative(self, x, y, dx, dy):
+        if dx == 0 and dy == 0:
+            return self.evaluate(x, y)
 
-        Args:
-            u (float): Parameter in the u-direction.
-            v (float): Parameter in the v-direction.
-            du (int): Order of the derivative with respect to u (0, 1, or 2).
-            dv (int): Order of the derivative with respect to v (0, 1, or 2).
+        N_val, M_val, points = self._evaluate_basis_functions(x, y, dx = 0, dy = 0)
 
-        Returns:
-            np.ndarray: The evaluated partial derivative vector.
-        """
-        if du == 0 and dv == 0:
-            return self.evaluate(u, v)
+        derivative_vec = np.zeros(points.shape[2]) 
+        
+        for j in range(M_val.shape[0]):
+            for i in range(N_val.shape[0]):
+                derivative_vec += N_val[i] * M_val[j] * points[i, j, :]
+ 
+        return derivative_vec
 
-        N_values, M_values, P_relevant = self._evaluate_basis_functions(u, v, du, dv)
-
-        # Perform the tensor product summation for the derivative
-        derivative_vector = np.einsum('i,j,ijk->k', N_values, M_values, P_relevant)
-        return derivative_vector
