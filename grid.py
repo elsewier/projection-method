@@ -19,7 +19,7 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
 
     # y direction
     ymin, ymax = -H, H
-    y_knots, y_colloc = generate_knots_and_colloc_pts(q, Ny, ymin, ymax, stretch_factor)
+    y_knots, y_colloc = generate_knots_and_colloc_pts(q, Ny, ymin, ymax, stretch_factor = 0.0)
 
     # z direction
     if is_3d:
@@ -47,6 +47,8 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
         'x_colloc': x_colloc,
         'y_colloc': y_colloc,
         'z_colloc': z_colloc,
+        'x_knots': x_knots,
+        'y_knots': y_knots,
         'X': X,
         'Y': Y,
         'Z': Z,

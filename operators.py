@@ -1,6 +1,12 @@
 import numpy as np 
+import scipy.sparse as sp
+import pyamg
+import time
+import matplotlib.pyplot as plt
+from scipy.sparse.linalg import spsolve, gmres
 from bspline_module import bspline_basis_physical, bspline_deriv1_physical, bspline_deriv2_physical, generate_knots_and_colloc_pts
 from grid import create_channel_grid 
+
 
 
 
@@ -21,56 +27,245 @@ class BSplineOperator:
         self.Dy, self.Dyy = None, None
         self.kz = None 
 
-        self._precompute_matrices()
+        self.precompute_matrices()
 
-def _precompute_matrices(self):
-    print("Pre-computing necessary matrices to build operators")
+    def precompute_matrices(self):
+        print("Pre-computing necessary matrices to build operators")
 
-    xmin, xmax  = 0, self.grid['Lx']
-    x_colloc    = self.grid['x_colloc']
-    knots_x, _  = generate_knots_and_colloc_pts(self.p, self.Nx, xmin, xmax)
+        xmin, xmax = 0, self.grid['Lx']
+        x_colloc = self.grid['x_colloc']
+        knots_x = self.grid['x_knots']
 
-    ymin, ymax  = 0, self.grid['Ly']
-    y_colloc    = self.grid['y_colloc']
-    knots_y, _  = generate_knots_and_colloc_pts(self.q, self.Ny, ymin, ymax)
-
-    B0x = np.zeros((self.Nx, self.Nx))
-    B1x = np.zeros((self.Nx, self.Nx))
-    B2x = np.zeros((self.Nx, self.Nx))
-
-    B0y = np.zeros((self.Ny, self.Ny))
-    B1y = np.zeros((self.Ny, self.Ny))
-    B2y = np.zeros((self.Ny, self.Ny))
+        ymin, ymax = -self.grid['H'], self.grid['H']
+        y_colloc = self.grid['y_colloc']
+        knots_y = self.grid['y_knots']
 
 
-    for i in range(self.Nx):
-        for j in range(self.Nx):
-            B0x[i,j] = bspline_basis_physical( j, p, knots_x, x_colloc[i], xmin, xmax)
-            B1x[i,j] = bspline_deriv1_physical(j, p, knots_x, x_colloc[i], xmin, xmax)
-            B2x[i,j] = bspline_deriv2_physical(j, p, knots_x, x_colloc[i], xmin, xmax)
+        B0x = np.zeros((self.Nx, self.Nx))
+        B1x = np.zeros((self.Nx, self.Nx))
+        B2x = np.zeros((self.Nx, self.Nx))
 
-    for i in range(self.Ny):
-        for j in range(self.Ny):
-            B0y[i,j] = bspline_basis_physical( j, q, knots_y, y_colloc[i], ymin, ymax)
-            B1y[i,j] = bspline_deriv1_physical(j, q, knots_y, y_colloc[i], ymin, ymax)
-            B2y[i,j] = bspline_deriv2_physical(j, q, knots_y, y_colloc[i], ymin, ymax)
-
-    Dx_T    = np.linalg.solve(B0x.T, B1x.T) # calculating Dx = B1x B0x^-1 without takinv inverse 
-    Dxx_T   = np.linalg.solve(B0x.T, B2x.T) # Dxx = B2x B0x^-1 
-    self.Dx = Dx_T.T
-    self.Dxx= Dxx_T.T
-
-    Dy_T    = np.linalg.solve(B0y.T, B1y.T) 
-    Dyy_T   = np.linalg.solve(B0y.T, B2y.T)
-    self.Dy = Dy_T.T
-    self.Dyy= Dyy_T.T
-
-    if self.Nz > 1:
-        Lz = self.grid['Lz']
-        dz = Lz / self.Nz 
-        self.kz = (2 * np.pi) * np.fft.fftfreq(self.Nz, d = dz)
-    else:
-        print("The geometry is 2D")
+        B0y = np.zeros((self.Ny, self.Ny))
+        B1y = np.zeros((self.Ny, self.Ny))
+        B2y = np.zeros((self.Ny, self.Ny))
 
 
+        for i in range(self.Nx):
+            for j in range(self.Nx):
+                B0x[i,j] = bspline_basis_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
+                B1x[i,j] = bspline_deriv1_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
+                B2x[i,j] = bspline_deriv2_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
+
+        for i in range(self.Ny):
+            for j in range(self.Ny):
+                B0y[i,j] = bspline_basis_physical( j, self.q, knots_y, y_colloc[i], ymin, ymax)
+                B1y[i,j] = bspline_deriv1_physical(j, self.q, knots_y, y_colloc[i], ymin, ymax)
+                B2y[i,j] = bspline_deriv2_physical(j, self.q, knots_y, y_colloc[i], ymin, ymax)
+
+        Dx_T    = np.linalg.solve(B0x.T, B1x.T) # calculating Dx = B1x B0x^-1 without takinv inverse 
+        Dxx_T   = np.linalg.solve(B0x.T, B2x.T) # Dxx = B2x B0x^-1 
+        self.Dx = Dx_T.T
+        self.Dxx= Dxx_T.T
+
+        Dy_T    = np.linalg.solve(B0y.T, B1y.T) 
+        Dyy_T   = np.linalg.solve(B0y.T, B2y.T)
+        self.Dy = Dy_T.T
+        self.Dyy= Dyy_T.T
+
+        # if self.Nz > 1:
+        #     Lz = self.grid['Lz']
+        #     dz = Lz / self.Nz 
+        #     self.kz = (2 * np.pi) * np.fft.fftfreq(self.Nz, d = dz)
+
+    def laplacian_2d(self):
+        # build 2D laplacian using 1D operators Dxx, Dyy 
+        # Laplacian = (Dxx kron Iy) + (Ix kron Dyy)
+        
+        # Dxx_sparse = sp.csr_matrix(self.Dxx)
+        # Dyy_sparse = sp.csr_matrix(self.Dyy) 
+        # Dxx = self.Dxx
+        # Dyy = self.Dyy
+
+        # Laplacian_sp = sp.csr_matrix(Laplacian_org)
+
+        # Ix_sparse  = sp.identity(self.Nx, format = 'csr')
+        # Iy_sparse  = sp.identity(self.Ny, format = 'csr')
+        # Ix = sp.identity(self.Nx)
+        # Iy = sp.identity(self.Ny)
+
+        # Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') # this takes too much time
+        # Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') # this takes too much time
+        # Laplacian_2D = sp.kron(Dxx, Iy) + sp.kron(Ix, Dyy)
+
+        # manually building laplacian csr 
+        Nx = self.Nx 
+        Ny = self.Ny 
+        N = Nx * Ny 
+
+        Dxx_s = sp.csr_matrix(self.Dxx)
+        Dyy_s = sp.csr_matrix(self.Dyy)
+
+        nnz = (Dxx_s.nnz * Ny) + (Dyy_s.nnz * Nx)
+        # csr matrices 
+        data = np.zeros(nnz, dtype = np.float64)
+        indices = np.zeros(nnz, dtype = np.int32)
+        indptr = np.zeros(N + 1, dtype = np.int32)
+
+        pos = 0 # this will hold the current location in the arrays
+
+        for i in range(Nx):
+            for j in range(Ny):
+
+                # Dxx part 
+                start = Dxx_s.indptr[i]
+                end = Dxx_s.indptr[i + 1]
+                col_xx = Dxx_s.indices[start:end]
+                data_xx = Dxx_s.data[start:end]
+                
+                indices[pos : pos + (end - start)] = col_xx * Ny + j 
+                data[pos : pos + (end - start)] = data_xx 
+                pos += (end - start)
+
+                # Dyy part 
+                start = Dyy_s.indptr[j]
+                end = Dyy_s.indptr[j + 1]
+                col_yy = Dyy_s.indices[start:end]
+                data_yy= Dyy_s.data[start:end]
+
+                indices[pos : pos + (end - start)] = i * Ny + col_yy
+                data[pos : pos + (end - start)] = data_yy 
+                pos += (end - start)
+
+                indptr[i * Ny + j + 1] = pos # index pointer for next row
+
+        Laplacian_2D = sp.csr_matrix((data, indices, indptr), shape = (N, N))
+        Laplacian_2D.sum_duplicates()
+        Laplacian_2D.eliminate_zeros()
+
+        return Laplacian_2D
+
+
+
+class PoissonSolver:
+    def __init__(self, operators):
+        self.operators = operators 
+        self.Nx = operators.Nx 
+        self.Ny = operators.Ny 
+        self.laplacian = operators.laplacian_2d()
+
+    def apply_bcs(self, L, rhs_vector, u_outlet):
+        Nx = self.Nx 
+        Ny = self.Ny 
+        X = self.operators.grid['X']
+        Y = self.operators.grid['Y']
+        L_lil = L.tolil()
+
+        kx = 4 * np.pi / self.operators.grid['Lx']
+        ky = 4 * np.pi / (2 * self.operators.grid['H'])
+
+        # bottom j = 0 and top j = Ny - 1 
+        for i in range(Nx):
+            # bottom 
+            idx = i * Ny + 0
+            L_lil.rows[idx] = [idx]
+            L_lil.data[idx] = [1.0]
+            rhs_vector[idx] = np.sin(kx * X[i, 0]) * np.cos(ky * Y[i, 0])
+
+            # top 
+            idx = i * Ny + (Ny - 1)
+            L_lil.rows[idx] = [idx]
+            L_lil.data[idx] = [1.0]
+            rhs_vector[idx] = np.sin(kx * X[i, Ny - 1]) * np.cos(ky * Y[i, Ny - 1])
+
+        # inlet (i = 0) is zero (sinkx * 0) = 0
+        for j in range(1, Ny - 1): 
+            idx = 0 * Ny + j 
+            L_lil.rows[idx] = [idx]
+            L_lil.data[idx] = [1.0]
+            rhs_vector[idx] = 0.0
+
+        # outlet
+        Dx_s = sp.csr_matrix(self.operators.Dx)
+        start = Dx_s.indptr[Nx - 1]
+        end = Dx_s.indptr[Nx]
+
+        cols_x  = Dx_s.indices[start : end]
+        vals_x  = Dx_s.data[start : end]
+
+        # i think i can mix this with dirichlet one
+        for j in range(1, Ny - 1): # except corners 
+            L_lil.rows[(Nx - 1) * Ny + j] = list((cols_x * Ny) + j)
+            L_lil.data[(Nx - 1) * Ny + j] = list(vals_x)
+            rhs_vector[(Nx - 1) * Ny + j] = float(u_outlet[j])
+
+        return L_lil.tocsr(), rhs_vector 
+
+    def solve(self, rhs_field, u_outlet):
+        # this will solve u = L^-1 * rhs 
+        rhs_vector = rhs_field.flatten(order = 'C')
+        Laplacian_bc, rhs_bc = self.apply_bcs(self.laplacian.copy(), rhs_vector.copy(), u_outlet)
+        # solution_vector = spsolve(Laplacian_bc,rhs_bc)
+        B = np.ones((Laplacian_bc.shape[0], 1))
+        ml = pyamg.smoothed_aggregation_solver(Laplacian_bc, B = B)
+        M = ml.aspreconditioner()
+
+        solution_vector, info = gmres(Laplacian_bc, rhs_bc, M = M, rtol = 1e-12, restart = 300, maxiter = 300)
+        if info != 0:
+            print(f"GMRES ended with info = {info}")
+        solution_field = solution_vector.reshape((self.Nx, self.Ny), order = 'C')
+
+        return solution_field
+
+
+def plot_result(X, Y, data, title):
+    plt.figure(figsize = (12, 5))
+    plt.pcolormesh(X, Y, data, shading = 'gouraud', cmap = 'viridis')
+    plt.title(title)
+    
+
+if __name__ == '__main__': # test poisson solver 
+# test function: u(x,y) = sin(pi x / Lx) * (y^2 - H^2)
+
+    p = 9 # order in x direction 
+    q = 9 # order in y direction
+    grid = create_channel_grid(Nx = 200, Ny = 200, Nz = 1, Lx = 1.0, H = 0.5, Lz = 0.0, p = p, q = p, stretch_factor = 0.0) 
+    operators = BSplineOperator(grid, p = p, q = p)
+
+    solver = PoissonSolver(operators)
+
+    Lx  = grid['Lx']
+    H   = grid['H']
+    X   = grid['X']
+    Y   = grid['Y']
+
+    kx = 4 * np.pi / Lx 
+    ky = 4 * np.pi / (2 * H)
+
+    rhs_field = -(kx**2 + ky**2) * np.sin(kx * X) * np.cos(ky * Y)
+    # rhs_field = -(np.pi / Lx)**2 * np.sin(np.pi * X / Lx) * (Y**2 - H**2) + 2 * np.sin(np.pi * X / Lx)
+
+    # u_outlet = -(np.pi / Lx) * (Y[-1, :]**2 - H**2)
+    u_outlet = kx * np.cos(ky * Y[-1, :])
+    start_time = time.perf_counter()
+    solution_numerical = solver.solve(rhs_field, u_outlet)
+    end_time = time.perf_counter()
+    print(solution_numerical.dtype)
+
+    time1 = end_time - start_time
+    print(f"Ax=b took {time1:.4f} seconds")
+    # solution_exact = np.sin(np.pi * X / Lx) * (Y**2 - H**2)
+    solution_exact = np.sin(kx * X) * np.cos(ky * Y)
+
+    error = np.max(np.abs(solution_numerical - solution_exact)) #infinity norm 
+    print(f"Infinity Norm of the solution {error}")
+
+    plot_result(X, Y, solution_numerical, "Numerical Solution")
+    plot_result(X, Y, solution_exact, "Exact Solution")
+    plot_result(X, Y, solution_numerical - solution_exact, "Error")
+    # plt.show()
+
+
+
+
+    
 
