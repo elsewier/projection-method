@@ -1,8 +1,8 @@
 # this will build matrices for per fourier mode 
 import numpy as np 
-import scipy as sp 
+import scipy.sparse as sp 
 import pyamg
-from scipy.sparse.lingalg import gmres
+from scipy.sparse.linalg import gmres
 
 def build_A(operators, nu, dt, beta):
     # A0 = (I - \Deltat \beta * nu * (Dxx kron Dyy))
@@ -33,14 +33,14 @@ def build_P(operators):
 # find boundary indices and apply bcs 
 def boundary_flag(Nx, Ny):
     # corners are included 
-    let_idx = []
+    left_idx = []
     right_idx = []
     bottom_idx = []
     top_idx = []
 
     for i in range(Nx):
-        bottom_idx.append(i * Ny + 0)
-        top_idx.append(i * Ny + (Ny - 1))
+        left_idx.append(i * Ny + 0)
+        right_idx.append(i * Ny + (Ny - 1))
     for j in range(Ny):
         bottom_idx.append(i * Ny + 0)
         top_idx.append(i * Ny + (Ny - 1))
@@ -53,14 +53,15 @@ def boundary_flag(Nx, Ny):
     
     return left_idx, right_idx, bottom_idx, top_idx
 
-def apply_dirichlet(A, b, idx):
+def apply_dirichlet(A, b, idx, val = 0.0):
     A_lil = A.tolil()
 
+    is_scalar = np.isscalar(val)
     for i in range(idx.shape[0]):
         k = int(idx[i])
         A_lil.rows[k] = [k]
         A_lil.data[k] = [1.0]
-        b[k] = 0.0 
+        b[k] = val[i] if not is_scalar else val
 
     A_csr = A_lil.tocsr()
     A_csr.sum_duplicates()
@@ -68,7 +69,7 @@ def apply_dirichlet(A, b, idx):
 
     return A_csr, b 
 
-def apply_neumann(A, b, ops, g_outlet):
+def apply_neumann(A, b, ops, g_outlet = None):
     # du/dn = g_outlet
     Nx = ops.Nx 
     Ny = ops.Ny
@@ -109,7 +110,6 @@ def pin_pressure(A, b, idx):
     return A_csr, b 
 
 
-# build linear system and precondition with pyamg 
 
 
     

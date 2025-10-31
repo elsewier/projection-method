@@ -3,9 +3,11 @@ import scipy.sparse as sp
 import pyamg
 import time
 import matplotlib.pyplot as plt
-from scipy.sparse.linalg import spsolve, gmres
+from pyamg.krylov import gmres
 from bspline_module import bspline_basis_physical, bspline_deriv1_physical, bspline_deriv2_physical, generate_knots_and_colloc_pts
 from grid import create_channel_grid 
+from scipy.io import savemat
+from pypardiso import spsolve
 
 
 
@@ -81,66 +83,68 @@ class BSplineOperator:
         # build 2D laplacian using 1D operators Dxx, Dyy 
         # Laplacian = (Dxx kron Iy) + (Ix kron Dyy)
         
-        # Dxx_sparse = sp.csr_matrix(self.Dxx)
-        # Dyy_sparse = sp.csr_matrix(self.Dyy) 
+        Nx = self.Nx 
+        Ny = self.Ny 
+        Dxx_sparse = sp.csr_matrix(self.Dxx)
+        Dyy_sparse = sp.csr_matrix(self.Dyy) 
         # Dxx = self.Dxx
         # Dyy = self.Dyy
 
         # Laplacian_sp = sp.csr_matrix(Laplacian_org)
 
-        # Ix_sparse  = sp.identity(self.Nx, format = 'csr')
-        # Iy_sparse  = sp.identity(self.Ny, format = 'csr')
+        Ix_sparse  = sp.identity(self.Nx, format = 'csr')
+        Iy_sparse  = sp.identity(self.Ny, format = 'csr')
         # Ix = sp.identity(self.Nx)
         # Iy = sp.identity(self.Ny)
 
         # Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') # this takes too much time
-        # Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') # this takes too much time
+        Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') # this takes too much time
         # Laplacian_2D = sp.kron(Dxx, Iy) + sp.kron(Ix, Dyy)
 
-        # manually building laplacian csr 
-        Nx = self.Nx 
-        Ny = self.Ny 
-        N = Nx * Ny 
-
-        Dxx_s = sp.csr_matrix(self.Dxx)
-        Dyy_s = sp.csr_matrix(self.Dyy)
-
-        nnz = (Dxx_s.nnz * Ny) + (Dyy_s.nnz * Nx)
-        # csr matrices 
-        data = np.zeros(nnz, dtype = np.float64)
-        indices = np.zeros(nnz, dtype = np.int32)
-        indptr = np.zeros(N + 1, dtype = np.int32)
-
-        pos = 0 # this will hold the current location in the arrays
-
-        for i in range(Nx):
-            for j in range(Ny):
-
-                # Dxx part 
-                start = Dxx_s.indptr[i]
-                end = Dxx_s.indptr[i + 1]
-                col_xx = Dxx_s.indices[start:end]
-                data_xx = Dxx_s.data[start:end]
-                
-                indices[pos : pos + (end - start)] = col_xx * Ny + j 
-                data[pos : pos + (end - start)] = data_xx 
-                pos += (end - start)
-
-                # Dyy part 
-                start = Dyy_s.indptr[j]
-                end = Dyy_s.indptr[j + 1]
-                col_yy = Dyy_s.indices[start:end]
-                data_yy= Dyy_s.data[start:end]
-
-                indices[pos : pos + (end - start)] = i * Ny + col_yy
-                data[pos : pos + (end - start)] = data_yy 
-                pos += (end - start)
-
-                indptr[i * Ny + j + 1] = pos # index pointer for next row
-
-        Laplacian_2D = sp.csr_matrix((data, indices, indptr), shape = (N, N))
-        Laplacian_2D.sum_duplicates()
-        Laplacian_2D.eliminate_zeros()
+        # # manually building laplacian csr 
+        # Nx = self.Nx 
+        # Ny = self.Ny 
+        # N = Nx * Ny 
+        #
+        # Dxx_s = sp.csr_matrix(self.Dxx)
+        # Dyy_s = sp.csr_matrix(self.Dyy)
+        #
+        # nnz = (Dxx_s.nnz * Ny) + (Dyy_s.nnz * Nx)
+        # # csr matrices 
+        # data = np.zeros(nnz, dtype = np.float64)
+        # indices = np.zeros(nnz, dtype = np.int32)
+        # indptr = np.zeros(N + 1, dtype = np.int32)
+        #
+        # pos = 0 # this will hold the current location in the arrays
+        #
+        # for i in range(Nx):
+        #     for j in range(Ny):
+        #
+        #         # Dxx part 
+        #         start = Dxx_s.indptr[i]
+        #         end = Dxx_s.indptr[i + 1]
+        #         col_xx = Dxx_s.indices[start:end]
+        #         data_xx = Dxx_s.data[start:end]
+        #
+        #         indices[pos : pos + (end - start)] = col_xx * Ny + j 
+        #         data[pos : pos + (end - start)] = data_xx 
+        #         pos += (end - start)
+        #
+        #         # Dyy part 
+        #         start = Dyy_s.indptr[j]
+        #         end = Dyy_s.indptr[j + 1]
+        #         col_yy = Dyy_s.indices[start:end]
+        #         data_yy= Dyy_s.data[start:end]
+        #
+        #         indices[pos : pos + (end - start)] = i * Ny + col_yy
+        #         data[pos : pos + (end - start)] = data_yy 
+        #         pos += (end - start)
+        #
+        #         indptr[i * Ny + j + 1] = pos # index pointer for next row
+        #
+        # Laplacian_2D = sp.csr_matrix((data, indices, indptr), shape = (N, N))
+        # Laplacian_2D.sum_duplicates()
+        # Laplacian_2D.eliminate_zeros()
 
         return Laplacian_2D
 
@@ -204,18 +208,21 @@ class PoissonSolver:
         # this will solve u = L^-1 * rhs 
         rhs_vector = rhs_field.flatten(order = 'C')
         Laplacian_bc, rhs_bc = self.apply_bcs(self.laplacian.copy(), rhs_vector.copy(), u_outlet)
-        # solution_vector = spsolve(Laplacian_bc,rhs_bc)
-        B = np.ones((Laplacian_bc.shape[0], 1))
-        ml = pyamg.smoothed_aggregation_solver(Laplacian_bc, B = B)
-        M = ml.aspreconditioner()
 
-        solution_vector, info = gmres(Laplacian_bc, rhs_bc, M = M, rtol = 1e-12, restart = 300, maxiter = 300)
-        if info != 0:
-            print(f"GMRES ended with info = {info}")
+        # Laplacian_csc = Laplacian_bc.tocsc() # csc is faster for spsolve
+        plt.spy(Laplacian_bc, precision=0, marker='s', markersize=1, aspect='equal', color='k')
+        # plt.show()
+
+        solution_vector = spsolve(Laplacian_bc,rhs_bc)
+
+        # check condition number
+        # solution_vector, info = gmres(Laplacian_bc, rhs_bc, M = M, tol = 1e-12, restart = 300, maxiter = 300)
         solution_field = solution_vector.reshape((self.Nx, self.Ny), order = 'C')
 
         return solution_field
 
+# imshow nonzero values it should be dominated diagonal component then convert to boolean 
+# show the matrix. this is similar to matlab eye function
 
 def plot_result(X, Y, data, title):
     plt.figure(figsize = (12, 5))
@@ -226,8 +233,8 @@ def plot_result(X, Y, data, title):
 if __name__ == '__main__': # test poisson solver 
 # test function: u(x,y) = sin(pi x / Lx) * (y^2 - H^2)
 
-    p = 9 # order in x direction 
-    q = 9 # order in y direction
+    p = 5 # order in x direction 
+    q = 5 # order in y direction
     grid = create_channel_grid(Nx = 200, Ny = 200, Nz = 1, Lx = 1.0, H = 0.5, Lz = 0.0, p = p, q = p, stretch_factor = 0.0) 
     operators = BSplineOperator(grid, p = p, q = p)
 
