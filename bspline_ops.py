@@ -1,9 +1,7 @@
 import numpy as np 
 import scipy.sparse as sp
-import pyamg
 import time
 import matplotlib.pyplot as plt
-from pyamg.krylov import gmres
 from bspline_module import bspline_basis_physical, bspline_deriv1_physical, bspline_deriv2_physical, generate_knots_and_colloc_pts
 from grid import create_channel_grid 
 from scipy.io import savemat
@@ -15,11 +13,12 @@ from pypardiso import spsolve
 
 
 class BSplineOperator:
-    def __init__(self, grid, p, q, stretch_factor = 0.0):
+    def __init__(self, grid, p, q, stretch_factor = 0.0, periodic_x = False):
         self.grid   = grid 
         self.p      = p 
         self.q      = q 
         self.stretch_factor = stretch_factor 
+        self.periodic_x = periodic_x
 
         self.Nx = grid.get('Nx', 1)
         self.Ny = grid.get('Ny', 1)
@@ -52,11 +51,31 @@ class BSplineOperator:
         B2y = np.zeros((self.Ny, self.Ny))
 
 
-        for i in range(self.Nx):
-            for j in range(self.Nx):
-                B0x[i,j] = bspline_basis_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
-                B1x[i,j] = bspline_deriv1_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
-                B2x[i,j] = bspline_deriv2_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
+        if not self.periodic_x:
+            for i in range(self.Nx):
+                for j in range(self.Nx):
+                    B0x[i,j] = bspline_basis_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
+                    B1x[i,j] = bspline_deriv1_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
+                    B2x[i,j] = bspline_deriv2_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
+        else: 
+            for i in range(self.Nx):
+                xi = x_colloc[i]
+                for j in range(self.Nx):
+                    b0_val = bspline_basis_physical(j, self.p, knots_x, xi, xmin, xmax) \
+                            + bspline_basis_physical(j, self.p, knots_x, xi - self.grid['Lx'], xmin, xmax) \
+                            + bspline_basis_physical(j, self.p, knots_x, xi + self.grid['Lx'], xmin, xmax) 
+
+                    b1_val = bspline_deriv1_physical(j, self.p, knots_x, xi, xmin, xmax) \
+                            + bspline_deriv1_physical(j, self.p, knots_x, xi - self.grid['Lx'], xmin, xmax) \
+                            + bspline_deriv1_physical(j, self.p, knots_x, xi + self.grid['Lx'], xmin, xmax) 
+
+                    b2_val = bspline_deriv2_physical(j, self.p, knots_x, xi, xmin, xmax) \
+                            + bspline_deriv2_physical(j, self.p, knots_x, xi - self.grid['Lx'], xmin, xmax) \
+                            + bspline_deriv2_physical(j, self.p, knots_x, xi + self.grid['Lx'], xmin, xmax) 
+                    
+                    B0x[i, j] = b0_val
+                    B1x[i, j] = b1_val
+                    B2x[i, j] = b2_val
 
         for i in range(self.Ny):
             for j in range(self.Ny):
@@ -97,8 +116,8 @@ class BSplineOperator:
         # Ix = sp.identity(self.Nx)
         # Iy = sp.identity(self.Ny)
 
-        # Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') # this takes too much time
-        Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') # this takes too much time
+        # Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr')
+        Laplacian_2D = sp.kron(Dxx_sparse, Iy_sparse, format = 'csr') + sp.kron(Ix_sparse, Dyy_sparse, format = 'csr') 
         # Laplacian_2D = sp.kron(Dxx, Iy) + sp.kron(Ix, Dyy)
 
         # # manually building laplacian csr 
@@ -181,26 +200,26 @@ class PoissonSolver:
             L_lil.data[idx] = [1.0]
             rhs_vector[idx] = np.sin(kx * X[i, Ny - 1]) * np.cos(ky * Y[i, Ny - 1])
 
-        # inlet (i = 0) is zero (sinkx * 0) = 0
-        for j in range(1, Ny - 1): 
-            idx = 0 * Ny + j 
-            L_lil.rows[idx] = [idx]
-            L_lil.data[idx] = [1.0]
-            rhs_vector[idx] = 0.0
-
-        # outlet
-        Dx_s = sp.csr_matrix(self.operators.Dx)
-        start = Dx_s.indptr[Nx - 1]
-        end = Dx_s.indptr[Nx]
-
-        cols_x  = Dx_s.indices[start : end]
-        vals_x  = Dx_s.data[start : end]
-
-        # i think i can mix this with dirichlet one
-        for j in range(1, Ny - 1): # except corners 
-            L_lil.rows[(Nx - 1) * Ny + j] = list((cols_x * Ny) + j)
-            L_lil.data[(Nx - 1) * Ny + j] = list(vals_x)
-            rhs_vector[(Nx - 1) * Ny + j] = float(u_outlet[j])
+        # # inlet (i = 0) is zero (sinkx * 0) = 0
+        # for j in range(1, Ny - 1): 
+        #     idx = 0 * Ny + j 
+        #     L_lil.rows[idx] = [idx]
+        #     L_lil.data[idx] = [1.0]
+        #     rhs_vector[idx] = 0.0
+        #
+        # # outlet
+        # Dx_s = sp.csr_matrix(self.operators.Dx)
+        # start = Dx_s.indptr[Nx - 1]
+        # end = Dx_s.indptr[Nx]
+        #
+        # cols_x  = Dx_s.indices[start : end]
+        # vals_x  = Dx_s.data[start : end]
+        #
+        # # i think i can mix this with dirichlet one
+        # for j in range(1, Ny - 1): # except corners 
+        #     L_lil.rows[(Nx - 1) * Ny + j] = list((cols_x * Ny) + j)
+        #     L_lil.data[(Nx - 1) * Ny + j] = list(vals_x)
+        #     rhs_vector[(Nx - 1) * Ny + j] = kx * np.cos(kx * X[i,j]) * np.cos(ky * Y[i,j])#float(u_outlet[j])
 
         return L_lil.tocsr(), rhs_vector 
 
@@ -211,7 +230,10 @@ class PoissonSolver:
 
         # Laplacian_csc = Laplacian_bc.tocsc() # csc is faster for spsolve
         plt.spy(Laplacian_bc, precision=0, marker='s', markersize=1, aspect='equal', color='k')
-        # plt.show()
+        plt.show()
+
+        # cond_number = np.linalg.cond(Laplacian_bc.todense())
+        # print(f"\n Condition number: {cond_number:.4e}")
 
         solution_vector = spsolve(Laplacian_bc,rhs_bc)
 
@@ -233,10 +255,10 @@ def plot_result(X, Y, data, title):
 if __name__ == '__main__': # test poisson solver 
 # test function: u(x,y) = sin(pi x / Lx) * (y^2 - H^2)
 
-    p = 5 # order in x direction 
-    q = 5 # order in y direction
-    grid = create_channel_grid(Nx = 200, Ny = 200, Nz = 1, Lx = 1.0, H = 0.5, Lz = 0.0, p = p, q = p, stretch_factor = 0.0) 
-    operators = BSplineOperator(grid, p = p, q = p)
+    p = 7 # order in x direction 
+    q = 7 # order in y direction
+    grid = create_channel_grid(Nx = 100, Ny = 50, Nz = 1, Lx = 1.0, H = 0.5, Lz = 0.0, p = p, q = p, stretch_factor = 0.0) 
+    operators = BSplineOperator(grid, p = p, q = p, periodic_x = True)
 
     solver = PoissonSolver(operators)
 
@@ -254,7 +276,7 @@ if __name__ == '__main__': # test poisson solver
     # u_outlet = -(np.pi / Lx) * (Y[-1, :]**2 - H**2)
     u_outlet = kx * np.cos(ky * Y[-1, :])
     start_time = time.perf_counter()
-    solution_numerical = solver.solve(rhs_field, u_outlet)
+    solution_numerical = solver.solve(rhs_field, u_outlet = None)
     end_time = time.perf_counter()
     print(solution_numerical.dtype)
 

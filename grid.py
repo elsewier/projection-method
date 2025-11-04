@@ -1,7 +1,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
-from bspline_module import generate_knots_and_colloc_pts
+from bspline_module import generate_knots_and_colloc_pts, generate_periodic_knots_and_colloc_pts
 
 def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 2d by default
 
@@ -15,7 +15,7 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
 
     # x direction
     xmin, xmax = 0, Lx
-    x_knots, x_colloc = generate_knots_and_colloc_pts(p, Nx, xmin, xmax, stretch_factor = 0.0)
+    x_knots, x_colloc = generate_periodic_knots_and_colloc_pts(p, Nx, xmin, xmax)
 
     # y direction
     ymin, ymax = -H, H

@@ -29,8 +29,6 @@ def generate_knots_and_colloc_pts(p, num_basis, xmin, xmax, stretch_factor=0.0):
     colloc_pts_out : np.ndarray
         The array of collocation points of size (num_basis).
     """
-    if num_basis <= p:
-        raise ValueError(f"Error: num_basis ({num_basis}) must be greater than p ({p}).")
 
     m = num_basis + p + 1
     knots_out = np.zeros(m)
@@ -60,6 +58,23 @@ def generate_knots_and_colloc_pts(p, num_basis, xmin, xmax, stretch_factor=0.0):
     colloc_pts_out[-1] = xmax
     
     return knots_out, colloc_pts_out
+
+def generate_periodic_knots_and_colloc_pts(p, num_basis, xmin, xmax):
+    m = num_basis + p + 1
+    knots_out = np.zeros(m)
+
+    uniform_knots = np.linspace(0, 1, num_basis + 1)
+    knots_out = np.arange(-p, num_basis + 1) * (1.0 / num_basis)
+
+    colloc_norm = np.zeros(num_basis)
+    for i in range(num_basis):
+        colloc_norm[i] = np.sum(knots_out[i+1:i+p+1]) / float(p)
+
+    colloc_pts_out = xmin + colloc_norm * (xmax - xmin)
+
+    return knots_out, colloc_pts_out
+
+
 
 def bspline_basis_normalized(j, p, knots, xi, tol=1.e-12):
     """

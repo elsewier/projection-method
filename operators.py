@@ -1,8 +1,8 @@
 # this will build matrices for per fourier mode 
 import numpy as np 
 import scipy.sparse as sp 
-import pyamg
 from scipy.sparse.linalg import gmres
+from pypardiso import spsolve
 
 def build_A(operators, nu, dt, beta):
     # A0 = (I - \Deltat \beta * nu * (Dxx kron Dyy))
@@ -39,11 +39,11 @@ def boundary_flag(Nx, Ny):
     top_idx = []
 
     for i in range(Nx):
-        left_idx.append(i * Ny + 0)
-        right_idx.append(i * Ny + (Ny - 1))
-    for j in range(Ny):
         bottom_idx.append(i * Ny + 0)
         top_idx.append(i * Ny + (Ny - 1))
+    for j in range(Ny):
+        left_idx.append(i * Ny + 0)
+        right_idx.append(i * Ny + (Ny - 1))
 
     left_idx = np.array(left_idx, dtype = np.int32)
     right_idx = np.array(right_idx, dtype = np.int32)
@@ -69,26 +69,42 @@ def apply_dirichlet(A, b, idx, val = 0.0):
 
     return A_csr, b 
 
-def apply_neumann(A, b, ops, g_outlet = None):
-    # du/dn = g_outlet
-    Nx = ops.Nx 
+def apply_neumann(A, b, boundary_indices, ops):
+    # du/dn = 0 
+    Nx = ops.Nx
     Ny = ops.Ny
-    if g_outlet is None:
-        g_outlet = np.zeros(Ny, dtype = float)
 
     Dx_s = sp.csr_matrix(ops.Dx)
-    start = Dx_s.indptr[Nx - 1]
-    end = Dx_s.indptr[Nx]
-
-    cols_x  = Dx_s.indices[start : end]
-    vals_x  = Dx_s.data[start : end]
+    Dy_s = sp.csr_matrix(ops.Dy)
 
     A_lil = A.tolil()
-    # i think i can mix this with dirichlet one
-    for j in range(1, Ny - 1): # except corners 
-        A_lil.rows[(Nx - 1) * Ny + j] = list((cols_x * Ny) + j)
-        A_lil.data[(Nx - 1) * Ny + j] = list(vals_x)
-        b[(Nx - 1) * Ny + j] = float(g_outlet[j])
+
+    for idx in boundary_indices: 
+        i = idx // Ny 
+        j = idx % Ny 
+
+        # bottom or top wall, normal direction is y 
+        if j == 0 or j == Ny - 1: 
+            start   = Dy_s.indptr[j]
+            end     = Dy_s.indptr[j + 1]
+            cols_y  = Dy_s.indices[start:end]
+            vals_y  = Dy_s.data[start:end]
+
+            A_lil.rows[idx] = list(i * Ny + cols_y)
+            A_lil.data[idx] = list(vals_y)
+
+        # left or right, normal direction is x 
+        elif i == 0 or i == Nx - 1:
+            start   = Dx_s.indptr[j]
+            end     = Dx_s.indptr[j + 1]
+            cols_x  = Dx_s.indices[start:end]
+            vals_x  = Dx_s.data[start:end]
+
+            A_lil.rows[idx] = list(cols_x * Ny + j)
+            A_lil.data[idx] = list(vals_x)
+
+        b[idx] = 0.0
+
 
     A_csr = A_lil.tocsr()
     A_csr.sum_duplicates()
