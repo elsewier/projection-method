@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.sparse.linalg import gmres, cg
 from pypardiso import spsolve
 import time
+import os
 
 from operators import build_A, build_P, apply_dirichlet, apply_neumann, boundary_flag, pin_pressure
 from bspline_ops import BSplineOperator 
@@ -23,7 +24,7 @@ def compute_nonlinear_term(u, v, p, ops):
     dp_dy = p @ ops.Dy.T
 
     # build nonlinear term 
-    N_u = -(u * du_dx + v * du_dy)# - dp_dx 
+    N_u = -(u * du_dx + v * du_dy)# - dp_dx NOTE: We dont calculate dp/dx here, it is taken into account at projection step
     N_v = -(u * dv_dx + v * dv_dy)# - dp_dy 
 
     return N_u, N_v 
@@ -130,14 +131,16 @@ def update_step(u_tilde, v_tilde, phi, p_n, operators, dt):
 if __name__ == '__main__':
     p = 5 
     q = 5 
-    Nx = 40
+    Nx = 100
     Ny = 40
-    grid = create_channel_grid(Nx = Nx, Ny = Ny, Nz = 1, Lx = 0.5,H = 0.5, Lz = 0.0, p = p, q = q, stretch_factor = 2.0)
+    grid = create_channel_grid(Nx = Nx, Ny = Ny, Nz = 1, Lx = 2.0*np.pi,H = 0.5, Lz = 0.0, p = p, q = q, stretch_factor = 2.0)
     operators = BSplineOperator(grid, p = p, q = q, periodic_x = True)
 
 
-    H = grid['H']
-    Y = grid['Y']
+    H   = grid['H']
+    Y   = grid['Y']
+    X   = grid['X']
+    Lx  = grid['Lx'] 
     u_n = 1.0 * (1 - (Y / H)**2) # parabolic velocity profile 
     v_n = np.zeros((Nx, Ny))
     p_n = np.zeros((Nx, Ny))
@@ -146,15 +149,24 @@ if __name__ == '__main__':
     num_steps = 1000
 
     nu = 1 / Re
-    dt = 0.001 
+    dt = 0.005 
 
-    body_force = (2.0 * nu * 1.0) / (H**2) # U_center = 1.0
+    U_max = 1.0
+    # \grad P + \nu \nabla^2 u = 0 
+    # here u is parabolic velocity profile u(y) = U_max * (1 - y^2/H^2)
+    gradP   = (2.0 * nu * U_max) / (H**2) # U_center = 1.0
     alpha1, beta1, gamma1, zeta1 = 29/60, 37/160, 8/15, 0.0
     alpha2, beta2, gamma2, zeta2 = -3/40, 5/24, 5/12, -17/ 60
     alpha3, beta3, gamma3, zeta3 = 1/6, 1/6, 3/4, -5/12
 
+
+    # perturbed initial field 
+    u_n = u_n + 0.05 * np.sin(2 * np.pi * X / Lx) * np.cos(np.pi * Y / H)
+    v_n = v_n + 0.05 * np.sin(2 * np.pi * X / Lx) * np.cos(np.pi * Y / H)
+
     Laplacian_2D = operators.laplacian_2d()
 
+    output_dir = "figures"
     for n in range(num_steps):
         print(f"Time-step {n + 1} / {num_steps}")
     
@@ -168,7 +180,7 @@ if __name__ == '__main__':
         viscous_u_old = nu * (Laplacian_2D @ u_old.flatten())
         viscous_v_old = nu * (Laplacian_2D @ v_old.flatten())
 
-        rhs_u1 = u_old.flatten() + dt * (alpha1 * viscous_u_old + gamma1 * Nu_old.flatten()) + dt * body_force
+        rhs_u1 = u_old.flatten() + dt * (alpha1 * viscous_u_old + gamma1 * Nu_old.flatten()) + dt * gradP
         rhs_v1 = v_old.flatten() + dt * (alpha1 * viscous_v_old + gamma1 * Nv_old.flatten())
 
         u_tilde1, v_tilde1 = predictor_step(rhs_u1, rhs_v1, operators, nu, dt, beta1)
@@ -227,9 +239,17 @@ if __name__ == '__main__':
         print(f"Step {n+1}: Max u-velocity = {np.max(u_n):.4f}")
 
 
-    plt.pcolormesh(grid['X'], grid['Y'], u_n, shading = 'gouraud', cmap = 'viridis')
-    plt.colorbar()
-    plt.show()
+        if (n + 1) % 10 == 0:
+            plt.figure(figsize = (10,5))
+            plt.pcolormesh(grid['X'], grid['Y'], u_n, shading = 'gouraud', cmap = 'viridis', vmin = 0.0, vmax = 1.05)
+            plt.colorbar()
+            plt.xlabel("X")
+            plt.ylabel("Y")
+            plt.title(f"U Velocity at Time-step {n + 1}")
+            filename = os.path.join(output_dir, f"frame_{n+1:04d}.png")
+            plt.savefig(filename, dpi = 150)
+            # plt.show()
+            plt.close()
 
 
 

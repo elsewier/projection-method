@@ -257,7 +257,7 @@ if __name__ == '__main__': # test poisson solver
 
     p = 7 # order in x direction 
     q = 7 # order in y direction
-    grid = create_channel_grid(Nx = 100, Ny = 50, Nz = 1, Lx = 1.0, H = 0.5, Lz = 0.0, p = p, q = p, stretch_factor = 0.0) 
+    grid = create_channel_grid(Nx = 25, Ny = 25, Nz = 1, Lx = 1.0, H = 0.5, Lz = 0.0, p = p, q = p, stretch_factor = 0.0) 
     operators = BSplineOperator(grid, p = p, q = p, periodic_x = True)
 
     solver = PoissonSolver(operators)

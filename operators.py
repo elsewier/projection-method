@@ -10,9 +10,9 @@ def build_A(operators, nu, dt, beta):
     Iy  = sp.eye(operators.Ny, format = 'csr')
     Dxx = sp.csr_matrix(operators.Dxx)
     Dyy = sp.csr_matrix(operators.Dyy)
-    Lxy = sp.kron(Dxx, Iy, format = 'csr') + sp.kron(Ix, Dyy, format = 'csr')
+    Laplacian = sp.kron(Dxx, Iy, format = 'csr') + sp.kron(Ix, Dyy, format = 'csr')
 
-    A0  = sp.eye(operators.Nx * operators.Ny, format = 'csr') - dt * beta * nu * Lxy
+    A0  = sp.eye(operators.Nx * operators.Ny, format = 'csr') - dt * beta * nu * Laplacian
     A0.sum_duplicates()
     A0.eliminate_zeros()
     return A0
