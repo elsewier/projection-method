@@ -19,7 +19,7 @@ def compute_nonlinear_term(u, v, w, ops):
     ngx, ngy, ngz = u.shape # physical size 
     Nz = int(ngz * 3 / 2) # larger grid 
 
-    Nz_fourier = ops.grid['Nz_fourier'] # number of fourier modes we have before padding 
+    Nz_fourier = ops.grid['Nz_fourier'] # number of fourier modes we have before 
 
     # we need to transform our velocities into fourier space 
     u_hat = np.fft.rfft(u, axis = 2)
@@ -44,21 +44,24 @@ def compute_nonlinear_term(u, v, w, ops):
     # now we can compute our derivatives
     # compute gradients of velocities 
     # X-derivatives
+    # NOTE: matmul operation only works for 2D arrays. for that we collapse last two dimensions into one.
+    # NOTE: Dx applied into each row. then the result reshaped into original form
     du_dx = (ops.Dx @ u1.reshape(ngx, -1)).reshape(u1.shape)
     dv_dx = (ops.Dx @ v1.reshape(ngx, -1)).reshape(v1.shape)
     dw_dx = (ops.Dx @ w1.reshape(ngx, -1)).reshape(w1.shape)
     
     # Y-derivatives
     # u1 is in shape (ngx, ngy, nzz) --> (ngx, nnz, ngy) 
-    # matrix multiply with Dy.T (ngy, ngy) ---> (ngz, nzz, ngy)
+    # matrix multiply with Dy.T (ngy, ngy). --> shape of the result will be (ngx, nnz, ngy)
     # transpose back to original 
+    # NOTE: Dy is applied to each column. 
     du_dy = (u1.transpose(0, 2, 1) @ ops.Dy.T).transpose(0, 2, 1)
     dv_dy = (v1.transpose(0, 2, 1) @ ops.Dy.T).transpose(0, 2, 1)
     dw_dy = (w1.transpose(0, 2, 1) @ ops.Dy.T).transpose(0, 2, 1)
 
     # Z-derivatives
     kzz = (2 * np.pi) * np.fft.rfftfreq(Nz, d = ops.grid['Lz'] / ngz)
-    kzz_3d = kzz.reshape(1, 1, -1)
+    kzz_3d = kzz.reshape(1, 1, -1) # make it 3d array for derivative calculation 
 
     du_dz = np.fft.irfft(1j * kzz_3d * u_hat1, n = Nz)
     dv_dz = np.fft.irfft(1j * kzz_3d * v_hat1, n = Nz)
@@ -85,16 +88,16 @@ def compute_nonlinear_term(u, v, w, ops):
     Nw_hat1 *= float(ngz) / float(Nz)
 
     # drop the last mode (nyquist mode)
-    if Nz_fourier > 1:
-        Nu_hat1[:, :, -1] = 0.0
-        Nv_hat1[:, :, -1] = 0.0
-        Nw_hat1[:, :, -1] = 0.0
+    Nu_hat1[:, :, -1] = 0.0
+    Nv_hat1[:, :, -1] = 0.0
+    Nw_hat1[:, :, -1] = 0.0
 
+        
 
     return Nu_hat1, Nv_hat1, Nw_hat1
     
 
-def predictor_step_fourier(rhs_u, rhs_v, rhs_w,ops, nu, dt, beta, wall_idx):
+def predictor_step_fourier(rhs_u, rhs_v, rhs_w,ops, nu, dt, A_k, wall_idx):
     # rhs are in fourier space!!
 
     ngx, ngy, nz = rhs_u.shape
@@ -108,18 +111,20 @@ def predictor_step_fourier(rhs_u, rhs_v, rhs_w,ops, nu, dt, beta, wall_idx):
         rhs_v_k = rhs_v[:, :, k].flatten()
         rhs_w_k = rhs_w[:, :, k].flatten()
 
-        kz_val = ops.kz[k]
-        A_k = build_A(ops, nu, dt, beta, kz_val)
+        A = A_k[k]
+        # kz_val = ops.kz[k]
+        # A = build_A(ops, nu, dt, beta, kz_val)
 
-        A_u, rhs_u_k = apply_dirichlet(A_k.copy(), rhs_u_k, wall_idx, val = 0.0)
-        A_v, rhs_v_k = apply_dirichlet(A_k.copy(), rhs_v_k, wall_idx, val = 0.0)
-        A_w, rhs_w_k = apply_dirichlet(A_k.copy(), rhs_w_k, wall_idx, val = 0.0)
+        A, rhs_u_k = apply_dirichlet(A.copy(), rhs_u_k, wall_idx, val = 0.0)
+        A, rhs_v_k = apply_dirichlet(A.copy(), rhs_v_k, wall_idx, val = 0.0)
+        A, rhs_w_k = apply_dirichlet(A.copy(), rhs_w_k, wall_idx, val = 0.0)
+    
 
 
         # solve the linear system for each velocity component 
-        u_tilde_vec = spsolve(A_u, rhs_u_k.real) + 1j * spsolve(A_u, rhs_u_k.imag)
-        v_tilde_vec = spsolve(A_v, rhs_v_k.real) + 1j * spsolve(A_v, rhs_v_k.imag)
-        w_tilde_vec = spsolve(A_w, rhs_w_k.real) + 1j * spsolve(A_w, rhs_w_k.imag)
+        u_tilde_vec = spsolve(A, rhs_u_k.real) + 1j * spsolve(A, rhs_u_k.imag)
+        v_tilde_vec = spsolve(A, rhs_v_k.real) + 1j * spsolve(A, rhs_v_k.imag)
+        w_tilde_vec = spsolve(A, rhs_w_k.real) + 1j * spsolve(A, rhs_w_k.imag)
 
         u_tilde_hat[:, :, k] = u_tilde_vec.reshape(ngx, ngy)
         v_tilde_hat[:, :, k] = v_tilde_vec.reshape(ngx, ngy)
@@ -129,7 +134,7 @@ def predictor_step_fourier(rhs_u, rhs_v, rhs_w,ops, nu, dt, beta, wall_idx):
 
 
 
-def correction_step_fourier(u_tilde_hat, v_tilde_hat, w_tilde_hat, ops, dt, wall_idx):
+def correction_step_fourier(u_tilde_hat, v_tilde_hat, w_tilde_hat, ops, dt, Laplacian, wall_idx):
 
     ngx, ngy, nz = u_tilde_hat.shape 
     
@@ -149,8 +154,9 @@ def correction_step_fourier(u_tilde_hat, v_tilde_hat, w_tilde_hat, ops, dt, wall
         # RHS of the poisson equation 
         rhs_p_k = (1 / dt) * div.flatten()
 
-        kz_val = ops.kz[k]
-        P_k = build_P(ops, kz_val)
+        # kz_val = ops.kz[k]
+        # P_k = build_P(ops, kz_val)
+        P_k = Laplacian[k]
 
         P, rhs_p_k = apply_neumann(P_k.copy(), rhs_p_k, wall_idx, ops)
 
@@ -191,10 +197,10 @@ def update_step_fourier(u_tilde_hat, v_tilde_hat, w_tilde_hat, p_hat, phi_hat, o
 
 
 if __name__ == '__main__':
-    p = 5 
-    q = 5 
-    ngx = 100
-    ngy = 50
+    p = 7 
+    q = 7 
+    ngx = 200
+    ngy = 80
     ngz = 4 
 
 
@@ -217,7 +223,7 @@ if __name__ == '__main__':
     
     # simulation parameters 
     Re = 180 
-    num_steps = 1000
+    num_steps = 10
     nu = 1.0 / Re 
     dt = 0.001 
 
@@ -234,6 +240,17 @@ if __name__ == '__main__':
 
     left, right, bottom, top = boundary_flag(ngx, ngy)
     wall_idx = np.concatenate([bottom, top])
+
+    # these matrices are not changing 
+    A = [[], [], []] # [substep][k]
+    Laplacian = [] #[k]
+
+    for k in range(Nz_fourier):
+        Laplacian.append(build_P(operators, operators.kz[k]).tocsr())
+
+    for i in range(3): # for beta
+        for k in range(Nz_fourier):
+            A[i].append(build_A(operators, nu, dt, beta[i], operators.kz[k]).tocsr())
 
     output_dir = "figures"
     # time-stepping loop 
@@ -256,14 +273,14 @@ if __name__ == '__main__':
 
         # assemble RHS 
 
-        viscous_u_old = np.zeros_like(u_old_hat)
+        viscous_u_old = np.zeros_like(u_old_hat) # NOTE: This can be allocated once
         viscous_v_old = np.zeros_like(v_old_hat)
         viscous_w_old = np.zeros_like(w_old_hat)
         for k in range(Nz_fourier):
-            Laplacian = build_P(operators, operators.kz[k])
-            viscous_u_old[:, :, k] = (Laplacian @ u_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
-            viscous_v_old[:, :, k] = (Laplacian @ v_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
-            viscous_w_old[:, :, k] = (Laplacian @ w_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            # Laplacian = build_P(operators, operators.kz[k]) # NOTE: 
+            viscous_u_old[:, :, k] = (Laplacian[k] @ u_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_v_old[:, :, k] = (Laplacian[k] @ v_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_w_old[:, :, k] = (Laplacian[k] @ w_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
 
         rhs_u1_hat = u_old_hat + dt * (alpha[0] * nu * viscous_u_old + gamma[0] * Nu_old)
@@ -272,14 +289,13 @@ if __name__ == '__main__':
 
         rhs_u1_hat[:, :, 0] += dt * gradP * gamma[0]
 
-        u_tilde1_hat, v_tilde1_hat, w_tilde1_hat = predictor_step_fourier(rhs_u1_hat, rhs_v1_hat, rhs_w1_hat, operators, nu, dt, beta[0], wall_idx)
-        phi1_hat = correction_step_fourier(u_tilde1_hat, v_tilde1_hat, w_tilde1_hat, operators, dt, wall_idx)
+        u_tilde1_hat, v_tilde1_hat, w_tilde1_hat = predictor_step_fourier(rhs_u1_hat, rhs_v1_hat, rhs_w1_hat, operators, nu, dt, A[0][:], wall_idx)
+        phi1_hat = correction_step_fourier(u_tilde1_hat, v_tilde1_hat, w_tilde1_hat, operators, dt, Laplacian, wall_idx)
         u1_hat, v1_hat, w1_hat, p1_hat = update_step_fourier(u_tilde1_hat, v_tilde1_hat, w_tilde1_hat, p_old_hat, phi1_hat, operators, dt)
 
-        if Nz_fourier > 1:
-            u1_hat[:, :, -1] = 0.0
-            v1_hat[:, :, -1] = 0.0
-            w1_hat[:, :, -1] = 0.0
+        u1_hat[:, :, -1] = 0.0
+        v1_hat[:, :, -1] = 0.0
+        w1_hat[:, :, -1] = 0.0
 
         # print(f" Max |u_tilde1|: {np.max(np.abs(u_tilde1_hat)):.2e}")
         # print(f" Max |v_tilde1|: {np.max(np.abs(v_tilde1_hat)):.2e}")
@@ -297,10 +313,9 @@ if __name__ == '__main__':
         viscous_v1 = np.zeros_like(v1_hat)
         viscous_w1 = np.zeros_like(w1_hat)
         for k in range(Nz_fourier):
-            Laplacian = build_P(operators, operators.kz[k])
-            viscous_u1[:, :, k] = (Laplacian @ u1_hat[:, :, k].flatten()).reshape(ngx, ngy)
-            viscous_v1[:, :, k] = (Laplacian @ v1_hat[:, :, k].flatten()).reshape(ngx, ngy)
-            viscous_w1[:, :, k] = (Laplacian @ w1_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_u1[:, :, k] = (Laplacian[k] @ u1_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_v1[:, :, k] = (Laplacian[k] @ v1_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_w1[:, :, k] = (Laplacian[k] @ w1_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
 
         rhs_u2_hat = u1_hat + dt * (alpha[1] * nu * viscous_u1  + gamma[1] * Nu1 + zeta[1] * Nu_old)
@@ -310,14 +325,13 @@ if __name__ == '__main__':
         # if necessary try to add gradP to u2 zero mode too
         rhs_u2_hat[:, :, 0] += dt * gradP * gamma[1]
 
-        u_tilde2_hat, v_tilde2_hat, w_tilde2_hat = predictor_step_fourier(rhs_u2_hat, rhs_v2_hat, rhs_w2_hat, operators, nu, dt, beta[1], wall_idx)
-        phi2_hat = correction_step_fourier(u_tilde2_hat, v_tilde2_hat, w_tilde2_hat, operators, dt, wall_idx)
+        u_tilde2_hat, v_tilde2_hat, w_tilde2_hat = predictor_step_fourier(rhs_u2_hat, rhs_v2_hat, rhs_w2_hat, operators, nu, dt, A[1][:], wall_idx)
+        phi2_hat = correction_step_fourier(u_tilde2_hat, v_tilde2_hat, w_tilde2_hat, operators, dt,Laplacian, wall_idx)
         u2_hat, v2_hat, w2_hat, p2_hat = update_step_fourier(u_tilde2_hat, v_tilde2_hat, w_tilde2_hat, p1_hat, phi2_hat, operators, dt)
 
-        if Nz_fourier > 1:
-            u2_hat[:, :, -1] = 0.0
-            v2_hat[:, :, -1] = 0.0
-            w2_hat[:, :, -1] = 0.0
+        u2_hat[:, :, -1] = 0.0
+        v2_hat[:, :, -1] = 0.0
+        w2_hat[:, :, -1] = 0.0
         # print(f" Max |u_tilde2|: {np.max(np.abs(u_tilde2_hat)):.2e}")
         # print(f" Max |v_tilde2|: {np.max(np.abs(v_tilde2_hat)):.2e}")
         # print(f" Max |phi2|: {np.max(np.abs(phi2_hat)):.2e}")
@@ -334,10 +348,9 @@ if __name__ == '__main__':
         viscous_v2 = np.zeros_like(v2_hat)
         viscous_w2 = np.zeros_like(w2_hat)
         for k in range(Nz_fourier):
-            Laplacian = build_P(operators, operators.kz[k])
-            viscous_u2[:, :, k] = (Laplacian @ u2_hat[:, :, k].flatten()).reshape(ngx, ngy)
-            viscous_v2[:, :, k] = (Laplacian @ v2_hat[:, :, k].flatten()).reshape(ngx, ngy)
-            viscous_w2[:, :, k] = (Laplacian @ w2_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_u2[:, :, k] = (Laplacian[k] @ u2_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_v2[:, :, k] = (Laplacian[k] @ v2_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_w2[:, :, k] = (Laplacian[k] @ w2_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
 
         rhs_u3_hat = u2_hat + dt * (alpha[2] * nu * viscous_u2  + gamma[2] * Nu2 + zeta[2] * Nu1)
@@ -346,8 +359,8 @@ if __name__ == '__main__':
 
         rhs_u3_hat[:, :, 0] += dt * gradP * gamma[2]
 
-        u_tilde3_hat, v_tilde3_hat, w_tilde3_hat = predictor_step_fourier(rhs_u3_hat, rhs_v3_hat, rhs_w3_hat, operators, nu, dt, beta[2], wall_idx)
-        phi3_hat = correction_step_fourier(u_tilde3_hat, v_tilde3_hat, w_tilde3_hat,operators, dt, wall_idx)
+        u_tilde3_hat, v_tilde3_hat, w_tilde3_hat = predictor_step_fourier(rhs_u3_hat, rhs_v3_hat, rhs_w3_hat, operators, nu, dt, A[2][:], wall_idx)
+        phi3_hat = correction_step_fourier(u_tilde3_hat, v_tilde3_hat, w_tilde3_hat,operators, dt, Laplacian, wall_idx)
         u3_hat, v3_hat, w3_hat, p3_hat = update_step_fourier(u_tilde3_hat, v_tilde3_hat, w_tilde3_hat, p2_hat, phi3_hat, operators, dt)
 
         # print(f" Max |u_tilde3|: {np.max(np.abs(u_tilde3_hat)):.2e}")
@@ -355,10 +368,9 @@ if __name__ == '__main__':
         # print(f" Max |phi3|: {np.max(np.abs(phi3_hat)):.2e}")
         # print(f" Max |u3|: {np.max(np.abs(u3_hat)):.2e}")
 
-        if Nz_fourier > 1:
-            u3_hat[:, :, -1] = 0.0
-            v3_hat[:, :, -1] = 0.0
-            w3_hat[:, :, -1] = 0.0
+        u3_hat[:, :, -1] = 0.0
+        v3_hat[:, :, -1] = 0.0
+        w3_hat[:, :, -1] = 0.0
 
         # final update 
         u_n = np.fft.irfft(u3_hat, n = ngz)
@@ -371,13 +383,13 @@ if __name__ == '__main__':
         end_time = time.perf_counter()
         print(f"Timestep took :{end_time - start_time} seconds")
         if (n + 10) % 1 == 0:
-        print(f"Step {n+1}: Max u-velocity = {np.max(u_n):.4f}")
-        plt.figure(figsize = (10,5))
-        z_slice = ngz // 2
-        plt.pcolormesh(X[:,:,z_slice], Y[:,:,z_slice], u_n[:,:,z_slice], shading = 'gouraud', cmap = 'viridis')
-        plt.colorbar(); plt.title(f"U Velocity at Time-step {n + 1}")
-        filename = os.path.join(output_dir, f"frame_{n+1:04d}.png")
-        plt.savefig(filename, dpi=150); plt.close()
+            print(f"Step {n+1}: Max u-velocity = {np.max(u_n):.4f}")
+            plt.figure(figsize = (10,5))
+            z_slice = ngz // 2
+            plt.pcolormesh(X[:,:,z_slice], Y[:,:,z_slice], u_n[:,:,z_slice], shading = 'gouraud', cmap = 'viridis')
+            plt.colorbar(); plt.title(f"U Velocity at Time-step {n + 1}")
+            filename = os.path.join(output_dir, f"frame_{n+1:04d}.png")
+            plt.savefig(filename, dpi=150); plt.close()
 
         # fig = go.Figure()
         #

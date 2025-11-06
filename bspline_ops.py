@@ -33,7 +33,6 @@ class BSplineOperator:
         self.precompute_matrices()
 
     def precompute_matrices(self):
-        print("Pre-computing necessary matrices to build operators")
 
         xmin, xmax = 0, self.grid['Lx']
         x_colloc = self.grid['x_colloc']
