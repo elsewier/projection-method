@@ -22,19 +22,21 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
     y_knots, y_colloc = generate_knots_and_colloc_pts(q, Ny, ymin, ymax, stretch_factor = 0.0)
 
     # z direction
-    if is_3d:
+    if Nz > 0:
         z_colloc = np.linspace(0, Lz, Nz, endpoint = False) # endpoint false excludes the last point
+        dz = Lz / Nz 
+        kz = (2 * np.pi) * np.fft.rfftfreq(Nz, d = dz)
+        Nz_fourier = len(kz) # number of fourier modes 
     else:
-        Nz = 1
-        Lz = 0.0
-        z_colloc = np.array([0.0])
+        kz = np.array([0.0])
+        Nz_fourier = 1
+
+    kz_3d = kz.reshape(1, 1, -1)
+
+
 
     # meshgrid
-    if is_3d:
-        X, Y, Z = np.meshgrid(x_colloc, y_colloc, z_colloc, indexing='ij') # indexing ij => (len(x), len(y)) if we use xy it will be (len(y), len(x))
-    else:
-        X, Y = np.meshgrid(x_colloc, y_colloc, indexing='ij')
-        Z = None 
+    X, Y, Z = np.meshgrid(x_colloc, y_colloc, z_colloc, indexing='ij') # indexing ij => (len(x), len(y)) if we use xy it will be (len(y), len(x))
 
     # flagging
     wall_indices_y = (0, Ny - 1)  # bottom, top
@@ -54,9 +56,9 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
         'Z': Z,
         'wall_indices_y': wall_indices_y,
         'in_out_indices_x': in_out_indices_x,
-        'Nx': Nx, 'Ny': Ny, 'Nz': Nz,
+        'Nx': Nx, 'Ny': Ny, 'Nz': Nz, 'Nz_fourier': Nz_fourier,
         'Lx': Lx, 'H': H, 'Lz': Lz,
-        'is_3d': is_3d
+        'kz': kz, 'kz_3d': kz_3d 
     }
 
     return grid_data

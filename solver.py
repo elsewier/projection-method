@@ -5,254 +5,389 @@ from scipy.sparse.linalg import gmres, cg
 from pypardiso import spsolve
 import time
 import os
+import plotly.graph_objects as go 
 
 from operators import build_A, build_P, apply_dirichlet, apply_neumann, boundary_flag, pin_pressure
 from bspline_ops import BSplineOperator 
 from grid import create_channel_grid 
 
-def compute_nonlinear_term(u, v, p, ops):
-    # N(u, p) = -(u.grad)u - grad(p)
+def compute_nonlinear_term(u, v, w, ops):
+    # N(u, p) = -(u.grad)u 
+    # NOTE: the gradP term is included in the correction step!
+    
+    # i need to apply 3/2 dealiasing 
+    ngx, ngy, ngz = u.shape # physical size 
+    Nz = int(ngz * 3 / 2) # larger grid 
 
+    Nz_fourier = ops.grid['Nz_fourier'] # number of fourier modes we have before padding 
+
+    # we need to transform our velocities into fourier space 
+    u_hat = np.fft.rfft(u, axis = 2)
+    v_hat = np.fft.rfft(v, axis = 2)
+    w_hat = np.fft.rfft(w, axis = 2)
+
+    nzz = Nz // 2 + 1 # fourier modes for new large grid 
+    u_hat1 = np.zeros((ngx, ngy, nzz), dtype = np.complex128)
+    v_hat1 = np.zeros((ngx, ngy, nzz), dtype = np.complex128)
+    w_hat1 = np.zeros((ngx, ngy, nzz), dtype = np.complex128)
+
+    # copy original values into low frequency part 
+    u_hat1[:, :, :Nz_fourier] = u_hat
+    v_hat1[:, :, :Nz_fourier] = v_hat
+    w_hat1[:, :, :Nz_fourier] = w_hat
+
+    # now we can transfrom our physical grid 
+    u1 = np.fft.irfft(u_hat1, n = Nz, axis = 2)
+    v1 = np.fft.irfft(v_hat1, n = Nz, axis = 2)
+    w1 = np.fft.irfft(w_hat1, n = Nz, axis = 2)
+
+    # now we can compute our derivatives
     # compute gradients of velocities 
-    du_dx = ops.Dx @ u # apply along column Dx is (Nx, Nx), u is (Nx, Ny)
-    du_dy = u @ ops.Dy.T # apply along rows Dy is (Ny, Ny) v is (Nx, Ny)
-    dv_dx = ops.Dx @ v 
-    dv_dy = v @ ops.Dy.T 
-
-    # pressure gradient 
-    dp_dx = ops.Dx @ p 
-    dp_dy = p @ ops.Dy.T
-
-    # build nonlinear term 
-    N_u = -(u * du_dx + v * du_dy)# - dp_dx NOTE: We dont calculate dp/dx here, it is taken into account at projection step
-    N_v = -(u * dv_dx + v * dv_dy)# - dp_dy 
-
-    return N_u, N_v 
+    # X-derivatives
+    du_dx = (ops.Dx @ u1.reshape(ngx, -1)).reshape(u1.shape)
+    dv_dx = (ops.Dx @ v1.reshape(ngx, -1)).reshape(v1.shape)
+    dw_dx = (ops.Dx @ w1.reshape(ngx, -1)).reshape(w1.shape)
     
-def compute_advection_term(u, v, ops):
-    du_dx = ops.Dx @ u
-    du_dy = u @ ops.Dy.T
-    dv_dx = ops.Dx @ v
-    dv_dy = v @ ops.Dy.T
+    # Y-derivatives
+    # u1 is in shape (ngx, ngy, nzz) --> (ngx, nnz, ngy) 
+    # matrix multiply with Dy.T (ngy, ngy) ---> (ngz, nzz, ngy)
+    # transpose back to original 
+    du_dy = (u1.transpose(0, 2, 1) @ ops.Dy.T).transpose(0, 2, 1)
+    dv_dy = (v1.transpose(0, 2, 1) @ ops.Dy.T).transpose(0, 2, 1)
+    dw_dy = (w1.transpose(0, 2, 1) @ ops.Dy.T).transpose(0, 2, 1)
+
+    # Z-derivatives
+    kzz = (2 * np.pi) * np.fft.rfftfreq(Nz, d = ops.grid['Lz'] / ngz)
+    kzz_3d = kzz.reshape(1, 1, -1)
+
+    du_dz = np.fft.irfft(1j * kzz_3d * u_hat1, n = Nz)
+    dv_dz = np.fft.irfft(1j * kzz_3d * v_hat1, n = Nz)
+    dw_dz = np.fft.irfft(1j * kzz_3d * w_hat1, n = Nz)
+
+    # build nonlinear term on dealised physical grid 
+    Nu = - (u1 * du_dx + v1 * du_dy + w1 * du_dz)
+    Nv = - (u1 * dv_dx + v1 * dv_dy + w1 * dv_dz)
+    Nw = - (u1 * dw_dx + v1 * dw_dy + w1 * dw_dz)
+
+    # transfrom to fourier space 
+    Nu_hat = np.fft.rfft(Nu, axis = 2)
+    Nv_hat = np.fft.rfft(Nv, axis = 2)
+    Nw_hat = np.fft.rfft(Nw, axis = 2)
+
+    # take only the part that corresponds to our original grid size 
+    Nu_hat1 = Nu_hat[:, :, :Nz_fourier]
+    Nv_hat1 = Nv_hat[:, :, :Nz_fourier]
+    Nw_hat1 = Nw_hat[:, :, :Nz_fourier]
+
+    # scaling because everything is performed on different size of grids 
+    Nu_hat1 *= float(ngz) / float(Nz)
+    Nv_hat1 *= float(ngz) / float(Nz)
+    Nw_hat1 *= float(ngz) / float(Nz)
+
+    # drop the last mode (nyquist mode)
+    if Nz_fourier > 1:
+        Nu_hat1[:, :, -1] = 0.0
+        Nv_hat1[:, :, -1] = 0.0
+        Nw_hat1[:, :, -1] = 0.0
+
+
+    return Nu_hat1, Nv_hat1, Nw_hat1
     
-    N_u = -(u * du_dx + v * du_dy)
-    N_v = -(u * dv_dx + v * dv_dy)
+
+def predictor_step_fourier(rhs_u, rhs_v, rhs_w,ops, nu, dt, beta, wall_idx):
+    # rhs are in fourier space!!
+
+    ngx, ngy, nz = rhs_u.shape
+
+    u_tilde_hat = np.zeros((ngx, ngy, nz), dtype = np.complex128)
+    v_tilde_hat = np.zeros((ngx, ngy, nz), dtype = np.complex128)
+    w_tilde_hat = np.zeros((ngx, ngy, nz), dtype = np.complex128)
+
+    for k in range(nz): # loop over each fourier mode 
+        rhs_u_k = rhs_u[:, :, k].flatten()
+        rhs_v_k = rhs_v[:, :, k].flatten()
+        rhs_w_k = rhs_w[:, :, k].flatten()
+
+        kz_val = ops.kz[k]
+        A_k = build_A(ops, nu, dt, beta, kz_val)
+
+        A_u, rhs_u_k = apply_dirichlet(A_k.copy(), rhs_u_k, wall_idx, val = 0.0)
+        A_v, rhs_v_k = apply_dirichlet(A_k.copy(), rhs_v_k, wall_idx, val = 0.0)
+        A_w, rhs_w_k = apply_dirichlet(A_k.copy(), rhs_w_k, wall_idx, val = 0.0)
+
+
+        # solve the linear system for each velocity component 
+        u_tilde_vec = spsolve(A_u, rhs_u_k.real) + 1j * spsolve(A_u, rhs_u_k.imag)
+        v_tilde_vec = spsolve(A_v, rhs_v_k.real) + 1j * spsolve(A_v, rhs_v_k.imag)
+        w_tilde_vec = spsolve(A_w, rhs_w_k.real) + 1j * spsolve(A_w, rhs_w_k.imag)
+
+        u_tilde_hat[:, :, k] = u_tilde_vec.reshape(ngx, ngy)
+        v_tilde_hat[:, :, k] = v_tilde_vec.reshape(ngx, ngy)
+        w_tilde_hat[:, :, k] = w_tilde_vec.reshape(ngx, ngy)
+
+    return u_tilde_hat, v_tilde_hat, w_tilde_hat
+
+
+
+def correction_step_fourier(u_tilde_hat, v_tilde_hat, w_tilde_hat, ops, dt, wall_idx):
+
+    ngx, ngy, nz = u_tilde_hat.shape 
     
-    return N_u, N_v
+    phi_hat = np.zeros((ngx, ngy, nz), dtype = np.complex128)
 
-def predictor_step(rhs_u, rhs_v, operators, nu, dt, beta):
+    for k in range(nz):
+        u_tilde_k = u_tilde_hat[:, :, k]
+        v_tilde_k = v_tilde_hat[:, :, k]
+        w_tilde_k = w_tilde_hat[:, :, k]
 
-    Nx = operators.Nx 
-    Ny = operators.Ny 
+        du_dx = ops.Dx @ u_tilde_k
+        dv_dy = v_tilde_k @ ops.Dy.T
+        dw_dz = 1j * ops.kz[k] * w_tilde_k 
 
-    # LHS matrix
-    A = build_A(operators, nu, dt, beta)
+        div = du_dx + dv_dy + dw_dz 
 
+        # RHS of the poisson equation 
+        rhs_p_k = (1 / dt) * div.flatten()
 
-    # apply boundary conditions 
-    left, right, bottom, top = boundary_flag(Nx, Ny)
+        kz_val = ops.kz[k]
+        P_k = build_P(ops, kz_val)
 
-    # no slip on the top and bottom walls 
-    wall_idx = np.concatenate([bottom, top])
-    A_u, rhs_u = apply_dirichlet(A.copy(), rhs_u, wall_idx, val = 0.0)
-    A_v, rhs_v = apply_dirichlet(A.copy(), rhs_v, wall_idx, val = 0.0)
+        P, rhs_p_k = apply_neumann(P_k.copy(), rhs_p_k, wall_idx, ops)
 
-    start_time = time.perf_counter()
+        if k ==0:
+            rhs_p_k -= np.mean(rhs_p_k.real)
+            P, rhs_p_k = pin_pressure(P, rhs_p_k, 0)
 
-    u_tilde_vector = spsolve(A_u, rhs_u)
-    v_tilde_vector = spsolve(A_v, rhs_v)
-    end_time = time.perf_counter()
-    # print(f"Elapsed solver time:{end_time - start_time}")
+        phi_k = spsolve(P, rhs_p_k.real) + 1j * spsolve(P, rhs_p_k.imag)
 
-    u_tilde = np.reshape(u_tilde_vector,(Nx, Ny))
-    v_tilde = np.reshape(v_tilde_vector,(Nx, Ny))
+        phi_hat[:, :, k] = phi_k.reshape(ngx, ngy) 
 
-    return u_tilde, v_tilde
+    return phi_hat
 
 
-def correction_step(u_tilde, v_tilde, operators, dt):
-    Nx = operators.Nx 
-    Ny = operators.Ny 
 
-    # we need to solve nabla^2 phi' = (1/delta t) nabla . u_tilde' 
-    du_dx = operators.Dx @ u_tilde 
-    dv_dy = v_tilde @ operators.Dy.T 
-
-    div = du_dx + dv_dy 
-    # print(np.abs(np.max(div)))
-
-    # RHS of poisson equation 
-    rhs_p = (1 / dt) * div.flatten()
-    # poisson matrix 
-    P = build_P(operators)
-
-    # apply bcs 
-    left, right, bottom, top = boundary_flag(Nx, Ny)
+def update_step_fourier(u_tilde_hat, v_tilde_hat, w_tilde_hat, p_hat, phi_hat, ops, dt):
+    ngx, ngy, nz = u_tilde_hat.shape 
     
-    wall_idx = np.concatenate([bottom, top])
-    P, rhs_p = apply_neumann(P, rhs_p, wall_idx, operators)
+    grad_phi_x = np.zeros((ngx, ngy, nz), dtype = np.complex128)
+    grad_phi_y = np.zeros((ngx, ngy, nz), dtype = np.complex128)
 
-    rhs_p -= np.mean(rhs_p)
-    P, rhs_p = pin_pressure(P, rhs_p, 0) # pin a corner to 0 
+    for k in range(nz):
+        phi_k = phi_hat[:, :, k]
+        grad_phi_x[:, :, k] = ops.Dx @ phi_k 
+        grad_phi_y[:, :, k] = phi_k @ ops.Dy.T
 
-    # solve for pressure correction 
-    # print("Solving pressure Poisson for substep-1")
-    start_time = time.time()
-    phi_vec = spsolve(P, rhs_p)
-    end_time = time.time()
-    # print(f"Pressure Poisson took:{end_time - start_time:.4f} seconds")
+    grad_phi_z = 1j * ops.grid['kz_3d'] * phi_hat 
 
-    phi = np.reshape(phi_vec, (Nx, Ny))
+    # update velocities
+    u_new_hat = u_tilde_hat - dt * grad_phi_x
+    v_new_hat = v_tilde_hat - dt * grad_phi_y
+    w_new_hat = w_tilde_hat - dt * grad_phi_z
 
-    return phi
+    # update pressure 
+    p_new_hat = p_hat + phi_hat 
 
-
-def update_step(u_tilde, v_tilde, phi, p_n, operators, dt):
-    grad_phi_x = operators.Dx @ phi 
-    grad_phi_y = phi @ operators.Dy.T 
-
-    # u^n+1 = u_tilde - \Delta t * grad_phi 
-    u_new = u_tilde - dt * grad_phi_x
-    v_new = v_tilde - dt * grad_phi_y
-
-    # p^n+1 = p^n + phi 
-    p_new = p_n + phi 
-
-    # # i may need to enforce boundary conditions again 
-    # left, right, bottom, top = boundary_flag(Nx, Ny)
-    # wall_idx = np.concatenate([bottom, top])
-    # u_new.ravel()[wall_idx] = 0.0
-    # v_new.ravel()[wall_idx] = 0.0
-
-    return u_new, v_new, p_new
-
+    return u_new_hat, v_new_hat, w_new_hat, p_new_hat 
 
 
 if __name__ == '__main__':
     p = 5 
     q = 5 
-    Nx = 100
-    Ny = 40
-    grid = create_channel_grid(Nx = Nx, Ny = Ny, Nz = 1, Lx = 2.0*np.pi,H = 0.5, Lz = 0.0, p = p, q = q, stretch_factor = 2.0)
+    ngx = 100
+    ngy = 50
+    ngz = 4 
+
+
+    Lx = 2.0 * np.pi 
+    H = 1.0 
+    Lz = 1.0 * np.pi 
+
+    grid = create_channel_grid(Nx = ngx, Ny = ngy, Nz = ngz, Lx = Lx,H = H, Lz = Lz, p = p, q = q, stretch_factor = 2.0)
     operators = BSplineOperator(grid, p = p, q = q, periodic_x = True)
 
+    Nz_fourier = grid['Nz_fourier']
+    # initial conditions 
+    X, Y, Z = grid['X'], grid['Y'], grid['Z']
+    u_vel = 1.0 * (1 - (Y[:, :, 0] / H)**2)
 
-    H   = grid['H']
-    Y   = grid['Y']
-    X   = grid['X']
-    Lx  = grid['Lx'] 
-    u_n = 1.0 * (1 - (Y / H)**2) # parabolic velocity profile 
-    v_n = np.zeros((Nx, Ny))
-    p_n = np.zeros((Nx, Ny))
+    u_n = u_vel[:, :, np.newaxis] * np.ones((1, 1, ngz))
+    v_n = np.zeros((ngx, ngy, ngz))
+    w_n = np.zeros((ngx, ngy, ngz))
+    p_n = np.zeros((ngx, ngy, ngz))
     
-    Re = 180
+    # simulation parameters 
+    Re = 180 
     num_steps = 1000
+    nu = 1.0 / Re 
+    dt = 0.001 
 
-    nu = 1 / Re
-    dt = 0.005 
-
-    U_max = 1.0
     # \grad P + \nu \nabla^2 u = 0 
     # here u is parabolic velocity profile u(y) = U_max * (1 - y^2/H^2)
+    U_max = 1.0
     gradP   = (2.0 * nu * U_max) / (H**2) # U_center = 1.0
-    alpha1, beta1, gamma1, zeta1 = 29/60, 37/160, 8/15, 0.0
-    alpha2, beta2, gamma2, zeta2 = -3/40, 5/24, 5/12, -17/ 60
-    alpha3, beta3, gamma3, zeta3 = 1/6, 1/6, 3/4, -5/12
+
+    alpha   = [29/60, -3/40, 1/6]
+    beta    = [37/160, 5/24, 1/6]
+    gamma   = [8/15, 5/12, 3/4]
+    zeta    = [0.0, -17/60, -5/12]
 
 
-    # perturbed initial field 
-    u_n = u_n + 0.05 * np.sin(2 * np.pi * X / Lx) * np.cos(np.pi * Y / H)
-    v_n = v_n + 0.05 * np.sin(2 * np.pi * X / Lx) * np.cos(np.pi * Y / H)
-
-    Laplacian_2D = operators.laplacian_2d()
+    left, right, bottom, top = boundary_flag(ngx, ngy)
+    wall_idx = np.concatenate([bottom, top])
 
     output_dir = "figures"
+    # time-stepping loop 
     for n in range(num_steps):
+
+        start_time = time.perf_counter()
         print(f"Time-step {n + 1} / {num_steps}")
-    
-        u_old, v_old, p_old = u_n.copy(), v_n.copy(), p_n.copy()
 
-        # compute N(u^n, p^n)
-        Nu_old, Nv_old = compute_nonlinear_term(u_old, v_old, p_old, operators)
+        u_old, v_old, w_old, p_old = u_n.copy(), v_n.copy(), w_n.copy(), p_n.copy()
 
-        print("Substep 1")
+        # print("Substep 1")
+        # compute nonlinear term 
+        Nu_old, Nv_old, Nw_old = compute_nonlinear_term(u_old, v_old, w_old, operators)
+
+        # transfrom u^n to fourier space 
+        u_old_hat = np.fft.rfft(u_old, axis = 2)
+        v_old_hat = np.fft.rfft(v_old, axis = 2)
+        w_old_hat = np.fft.rfft(w_old, axis = 2)
+        p_old_hat = np.fft.rfft(p_old, axis = 2)
+
         # assemble RHS 
-        viscous_u_old = nu * (Laplacian_2D @ u_old.flatten())
-        viscous_v_old = nu * (Laplacian_2D @ v_old.flatten())
 
-        rhs_u1 = u_old.flatten() + dt * (alpha1 * viscous_u_old + gamma1 * Nu_old.flatten()) + dt * gradP
-        rhs_v1 = v_old.flatten() + dt * (alpha1 * viscous_v_old + gamma1 * Nv_old.flatten())
+        viscous_u_old = np.zeros_like(u_old_hat)
+        viscous_v_old = np.zeros_like(v_old_hat)
+        viscous_w_old = np.zeros_like(w_old_hat)
+        for k in range(Nz_fourier):
+            Laplacian = build_P(operators, operators.kz[k])
+            viscous_u_old[:, :, k] = (Laplacian @ u_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_v_old[:, :, k] = (Laplacian @ v_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_w_old[:, :, k] = (Laplacian @ w_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
-        u_tilde1, v_tilde1 = predictor_step(rhs_u1, rhs_v1, operators, nu, dt, beta1)
-        phi1 = correction_step(u_tilde1, v_tilde1, operators, dt)
-        u1, v1, p1 = update_step(u_tilde1, v_tilde1, phi1, p_old, operators, dt)
 
-        # compute N(u', p')
-        Nu1, Nv1 = compute_nonlinear_term(u1, v1, p1, operators)
+        rhs_u1_hat = u_old_hat + dt * (alpha[0] * nu * viscous_u_old + gamma[0] * Nu_old)
+        rhs_v1_hat = v_old_hat + dt * (alpha[0] * nu * viscous_v_old + gamma[0] * Nv_old)
+        rhs_w1_hat = w_old_hat + dt * (alpha[0] * nu * viscous_w_old + gamma[0] * Nw_old)
 
-        # print(f" Max |u_tilde1|: {np.max(np.abs(u_tilde1)):.2e}")
-        # print(f" Max |v_tilde1|: {np.max(np.abs(v_tilde1)):.2e}")
-        # print(f" Max |phi1|: {np.max(np.abs(phi1)):.2e}")
-        # print(f" Max |u1|: {np.max(np.abs(u1)):.2e}")
+        rhs_u1_hat[:, :, 0] += dt * gradP * gamma[0]
 
-    
-        print("Substep 2")
-        # assemble RHS 
-        viscous_u1  = nu * (Laplacian_2D @ u1.flatten())
-        viscous_v1  = nu * (Laplacian_2D @ v1.flatten())
+        u_tilde1_hat, v_tilde1_hat, w_tilde1_hat = predictor_step_fourier(rhs_u1_hat, rhs_v1_hat, rhs_w1_hat, operators, nu, dt, beta[0], wall_idx)
+        phi1_hat = correction_step_fourier(u_tilde1_hat, v_tilde1_hat, w_tilde1_hat, operators, dt, wall_idx)
+        u1_hat, v1_hat, w1_hat, p1_hat = update_step_fourier(u_tilde1_hat, v_tilde1_hat, w_tilde1_hat, p_old_hat, phi1_hat, operators, dt)
 
-        rhs_u2 = u1.flatten() + dt * (alpha2 * viscous_u1 + gamma2 * Nu1.flatten() + zeta2 * Nu_old.flatten())
-        rhs_v2 = v1.flatten() + dt * (alpha2 * viscous_v1 + gamma2 * Nv1.flatten() + zeta2 * Nv_old.flatten())
+        if Nz_fourier > 1:
+            u1_hat[:, :, -1] = 0.0
+            v1_hat[:, :, -1] = 0.0
+            w1_hat[:, :, -1] = 0.0
 
-        u_tilde2, v_tilde2 = predictor_step(rhs_u2, rhs_v2, operators, nu, dt, beta2)
-        phi2 = correction_step(u_tilde2, v_tilde2, operators, dt)
-        u2, v2, p2 = update_step(u_tilde2, v_tilde2, phi2, p1, operators, dt)
+        # print(f" Max |u_tilde1|: {np.max(np.abs(u_tilde1_hat)):.2e}")
+        # print(f" Max |v_tilde1|: {np.max(np.abs(v_tilde1_hat)):.2e}")
+        # print(f" Max |phi1|: {np.max(np.abs(phi1_hat)):.2e}")
+        # print(f" Max |u1|: {np.max(np.abs(u1_hat)):.2e}")
 
-        # compute N(u'', p'')
-        Nu2, Nv2 = compute_nonlinear_term(u2, v2, p2, operators)
-        # print(f" Max |u_tilde2|: {np.max(np.abs(u_tilde2)):.2e}")
-        # print(f" Max |v_tilde2|: {np.max(np.abs(v_tilde2)):.2e}")
-        # print(f" Max |phi2|: {np.max(np.abs(phi2)):.2e}")
-        # print(f" Max |u2|: {np.max(np.abs(u2)):.2e}")
+        # print("Substep 2")
+        u1_phys = np.fft.irfft(u1_hat, n = ngz)
+        v1_phys = np.fft.irfft(v1_hat, n = ngz)
+        w1_phys = np.fft.irfft(w1_hat, n = ngz)
 
-        print("Substep 3")
-        # assemble RHS 
-        viscous_u2  = nu * (Laplacian_2D @ u2.flatten())
-        viscous_v2  = nu * (Laplacian_2D @ v2.flatten())
+        Nu1, Nv1, Nw1 = compute_nonlinear_term(u1_phys, v1_phys, w1_phys, operators)
 
-        rhs_u3 = u2.flatten() + dt * (alpha3 * viscous_u2 + gamma3 * Nu2.flatten() + zeta3 * Nu1.flatten())
-        rhs_v3 = v2.flatten() + dt * (alpha3 * viscous_v2 + gamma3 * Nv2.flatten() + zeta3 * Nv1.flatten())
+        viscous_u1 = np.zeros_like(u1_hat)
+        viscous_v1 = np.zeros_like(v1_hat)
+        viscous_w1 = np.zeros_like(w1_hat)
+        for k in range(Nz_fourier):
+            Laplacian = build_P(operators, operators.kz[k])
+            viscous_u1[:, :, k] = (Laplacian @ u1_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_v1[:, :, k] = (Laplacian @ v1_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_w1[:, :, k] = (Laplacian @ w1_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
-        u_tilde3, v_tilde3 = predictor_step(rhs_u3, rhs_v3, operators, nu, dt, beta3)
-        phi3 = correction_step(u_tilde3, v_tilde3, operators, dt)
-        u3, v3, p3 = update_step(u_tilde3, v_tilde3, phi3, p2, operators, dt)
 
-        # print(f" Max |u_tilde3|: {np.max(np.abs(u_tilde3)):.2e}")
-        # print(f" Max |v_tilde3|: {np.max(np.abs(v_tilde3)):.2e}")
-        # print(f" Max |phi3|: {np.max(np.abs(phi3)):.2e}")
-        # print(f" Max |u3|: {np.max(np.abs(u3)):.2e}")
+        rhs_u2_hat = u1_hat + dt * (alpha[1] * nu * viscous_u1  + gamma[1] * Nu1 + zeta[1] * Nu_old)
+        rhs_v2_hat = v1_hat + dt * (alpha[1] * nu * viscous_v1  + gamma[1] * Nv1 + zeta[1] * Nv_old)
+        rhs_w2_hat = w1_hat + dt * (alpha[1] * nu * viscous_w1  + gamma[1] * Nw1 + zeta[1] * Nw_old)
+
+        # if necessary try to add gradP to u2 zero mode too
+        rhs_u2_hat[:, :, 0] += dt * gradP * gamma[1]
+
+        u_tilde2_hat, v_tilde2_hat, w_tilde2_hat = predictor_step_fourier(rhs_u2_hat, rhs_v2_hat, rhs_w2_hat, operators, nu, dt, beta[1], wall_idx)
+        phi2_hat = correction_step_fourier(u_tilde2_hat, v_tilde2_hat, w_tilde2_hat, operators, dt, wall_idx)
+        u2_hat, v2_hat, w2_hat, p2_hat = update_step_fourier(u_tilde2_hat, v_tilde2_hat, w_tilde2_hat, p1_hat, phi2_hat, operators, dt)
+
+        if Nz_fourier > 1:
+            u2_hat[:, :, -1] = 0.0
+            v2_hat[:, :, -1] = 0.0
+            w2_hat[:, :, -1] = 0.0
+        # print(f" Max |u_tilde2|: {np.max(np.abs(u_tilde2_hat)):.2e}")
+        # print(f" Max |v_tilde2|: {np.max(np.abs(v_tilde2_hat)):.2e}")
+        # print(f" Max |phi2|: {np.max(np.abs(phi2_hat)):.2e}")
+        # print(f" Max |u2|: {np.max(np.abs(u2_hat)):.2e}")
+
+        # print("Substep 3")
+        u2_phys = np.fft.irfft(u2_hat, n = ngz)
+        v2_phys = np.fft.irfft(v2_hat, n = ngz)
+        w2_phys = np.fft.irfft(w2_hat, n = ngz)
+
+        Nu2, Nv2, Nw2 = compute_nonlinear_term(u2_phys, v2_phys, w2_phys, operators)
+
+        viscous_u2 = np.zeros_like(u2_hat)
+        viscous_v2 = np.zeros_like(v2_hat)
+        viscous_w2 = np.zeros_like(w2_hat)
+        for k in range(Nz_fourier):
+            Laplacian = build_P(operators, operators.kz[k])
+            viscous_u2[:, :, k] = (Laplacian @ u2_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_v2[:, :, k] = (Laplacian @ v2_hat[:, :, k].flatten()).reshape(ngx, ngy)
+            viscous_w2[:, :, k] = (Laplacian @ w2_hat[:, :, k].flatten()).reshape(ngx, ngy)
+
+
+        rhs_u3_hat = u2_hat + dt * (alpha[2] * nu * viscous_u2  + gamma[2] * Nu2 + zeta[2] * Nu1)
+        rhs_v3_hat = v2_hat + dt * (alpha[2] * nu * viscous_v2  + gamma[2] * Nv2 + zeta[2] * Nv1)
+        rhs_w3_hat = w2_hat + dt * (alpha[2] * nu * viscous_w2  + gamma[2] * Nw2 + zeta[2] * Nw1)
+
+        rhs_u3_hat[:, :, 0] += dt * gradP * gamma[2]
+
+        u_tilde3_hat, v_tilde3_hat, w_tilde3_hat = predictor_step_fourier(rhs_u3_hat, rhs_v3_hat, rhs_w3_hat, operators, nu, dt, beta[2], wall_idx)
+        phi3_hat = correction_step_fourier(u_tilde3_hat, v_tilde3_hat, w_tilde3_hat,operators, dt, wall_idx)
+        u3_hat, v3_hat, w3_hat, p3_hat = update_step_fourier(u_tilde3_hat, v_tilde3_hat, w_tilde3_hat, p2_hat, phi3_hat, operators, dt)
+
+        # print(f" Max |u_tilde3|: {np.max(np.abs(u_tilde3_hat)):.2e}")
+        # print(f" Max |v_tilde3|: {np.max(np.abs(v_tilde3_hat)):.2e}")
+        # print(f" Max |phi3|: {np.max(np.abs(phi3_hat)):.2e}")
+        # print(f" Max |u3|: {np.max(np.abs(u3_hat)):.2e}")
+
+        if Nz_fourier > 1:
+            u3_hat[:, :, -1] = 0.0
+            v3_hat[:, :, -1] = 0.0
+            w3_hat[:, :, -1] = 0.0
+
         # final update 
-        u_n, v_n, p_n = u3, v3, p3 
-        # u_n, v_n, p_n = u1, v1, p1 
+        u_n = np.fft.irfft(u3_hat, n = ngz)
+        v_n = np.fft.irfft(v3_hat, n = ngz)
+        w_n = np.fft.irfft(w3_hat, n = ngz)
+        p_n = np.fft.irfft(p3_hat, n = ngz)
 
 
+
+        end_time = time.perf_counter()
+        print(f"Timestep took :{end_time - start_time} seconds")
+        if (n + 10) % 1 == 0:
         print(f"Step {n+1}: Max u-velocity = {np.max(u_n):.4f}")
+        plt.figure(figsize = (10,5))
+        z_slice = ngz // 2
+        plt.pcolormesh(X[:,:,z_slice], Y[:,:,z_slice], u_n[:,:,z_slice], shading = 'gouraud', cmap = 'viridis')
+        plt.colorbar(); plt.title(f"U Velocity at Time-step {n + 1}")
+        filename = os.path.join(output_dir, f"frame_{n+1:04d}.png")
+        plt.savefig(filename, dpi=150); plt.close()
 
-
-        if (n + 1) % 10 == 0:
-            plt.figure(figsize = (10,5))
-            plt.pcolormesh(grid['X'], grid['Y'], u_n, shading = 'gouraud', cmap = 'viridis', vmin = 0.0, vmax = 1.05)
-            plt.colorbar()
-            plt.xlabel("X")
-            plt.ylabel("Y")
-            plt.title(f"U Velocity at Time-step {n + 1}")
-            filename = os.path.join(output_dir, f"frame_{n+1:04d}.png")
-            plt.savefig(filename, dpi = 150)
-            # plt.show()
-            plt.close()
-
-
-
-
-
+        # fig = go.Figure()
+        #
+        # vmin = np.min(u_n)
+        # vmax = np.max(u_n)
+        #
+        # for k in range(ngz):
+        #     fig.add_trace(go.Surface(x = grid['X'][:,:,k], y= grid['Y'][:,:,k], z = grid['Z'][:,:,k], 
+        #                              surfacecolor=u_n[:,:,k], colorscale='Viridis', cmin=vmin, cmax=vmax))
+        # # fig.show()
+        # fig.write_html('test.html')
+        # stop
 

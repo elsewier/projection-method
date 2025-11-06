@@ -22,11 +22,13 @@ class BSplineOperator:
 
         self.Nx = grid.get('Nx', 1)
         self.Ny = grid.get('Ny', 1)
-        self.Nz = grid.get('Nz', 1)
+        self.Nz = grid.get('Nz', 1) # physical number of points 
+        self.Nz_fourier = grid.get('Nz_fourier') # number of fourier mods 
+
+        self.kz = grid.get('kz') # wavenumbers 
 
         self.Dx, self.Dxx = None, None
         self.Dy, self.Dyy = None, None
-        self.kz = None 
 
         self.precompute_matrices()
 

@@ -4,27 +4,34 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import gmres
 from pypardiso import spsolve
 
-def build_A(operators, nu, dt, beta):
+def build_A(operators, nu, dt, beta, kz):
     # A0 = (I - \Deltat \beta * nu * (Dxx kron Dyy))
     Ix  = sp.eye(operators.Nx, format = 'csr')
     Iy  = sp.eye(operators.Ny, format = 'csr')
     Dxx = sp.csr_matrix(operators.Dxx)
     Dyy = sp.csr_matrix(operators.Dyy)
-    Laplacian = sp.kron(Dxx, Iy, format = 'csr') + sp.kron(Ix, Dyy, format = 'csr')
+    Laplacian_2D = sp.kron(Dxx, Iy, format = 'csr') + sp.kron(Ix, Dyy, format = 'csr')
 
-    A0  = sp.eye(operators.Nx * operators.Ny, format = 'csr') - dt * beta * nu * Laplacian
+    I_2D = sp.eye(operators.Nx * operators.Ny, format = 'csr')
+    A0  = I_2D - dt * beta * nu * (Laplacian_2D - (kz**2) * I_2D)
+
     A0.sum_duplicates()
     A0.eliminate_zeros()
     return A0
 
-def build_P(operators):
+def build_P(operators, kz):
 # Poisson pressure correction : (Dxx kron Dyy)
     Ix  = sp.eye(operators.Nx, format = 'csr')
     Iy  = sp.eye(operators.Ny, format = 'csr')
     Dxx = sp.csr_matrix(operators.Dxx)
     Dyy = sp.csr_matrix(operators.Dyy)
 
-    P0  = sp.kron(Dxx, Iy, format = 'csr') + sp.kron(Ix, Dyy, format = 'csr')
+    Laplacian_2D = sp.kron(Dxx, Iy, format = 'csr') + sp.kron(Ix, Dyy, format = 'csr')
+
+    I_2D = sp.eye(operators.Nx * operators.Ny, format = 'csr')
+
+    P0  = Laplacian_2D - (kz**2) * I_2D
+
     P0.sum_duplicates()
     P0.eliminate_zeros()
     return P0
