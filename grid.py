@@ -7,7 +7,6 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
 
     is_3d = Nz > 1
 
-    print("--- Creating Computational Grid ---")
     if is_3d:
         print(f"3D Grid Generation ({Nx}x{Ny}x{Nz})")
     else:
@@ -96,7 +95,6 @@ if __name__ == '__main__':
     # Verification
     print("\n--- 3D Verification ---")
     
-    # Visualization (3D scatter plot of points)
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(grid_3d['X'], grid_3d['Z'], grid_3d['Y'], c='k', marker='.')
