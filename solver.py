@@ -166,7 +166,7 @@ def correction_step(u_tilde_hat, v_tilde_hat, w_tilde_hat, ops, dt, Poisson_solv
         _, rhs_p_k = apply_neumann(P, rhs_p_k, wall_idx, ops)
 
         if k ==0:
-            rhs_p_k -= np.mean(rhs_p_k.real)
+            rhs_p_k -= np.mean(rhs_p_k)
             _, rhs_p_k = pin_pressure(P, rhs_p_k, 0)
 
         phi_k = pardiso_solver.solve(P, rhs_p_k.real) + 1j * pardiso_solver.solve(P, rhs_p_k.imag)
@@ -202,10 +202,10 @@ def update_step(u_tilde_hat, v_tilde_hat, w_tilde_hat, p_hat, phi_hat, ops, dt):
 
 
 if __name__ == '__main__':
-    p = 7 
-    q = 7 
+    p = 5 
+    q = 5 
     ngx = 100
-    ngy = 100
+    ngy = 40
     ngz = 4
 
 
@@ -213,7 +213,7 @@ if __name__ == '__main__':
     H = 1.0 
     Lz = 1.0 * np.pi 
 
-    grid = create_channel_grid(Nx = ngx, Ny = ngy, Nz = ngz, Lx = Lx,H = H, Lz = Lz, p = p, q = q, stretch_factor = 2.0)
+    grid = create_channel_grid(Nx = ngx, Ny = ngy, Nz = ngz, Lx = Lx,H = H, Lz = Lz, p = p, q = q, stretch_factor = 1.2)
     operators = BSplineOperator(grid, p = p, q = q, periodic_x = True)
 
     Nz_fourier = grid['Nz_fourier']
@@ -225,17 +225,19 @@ if __name__ == '__main__':
     v_n = np.zeros((ngx, ngy, ngz))
     w_n = np.zeros((ngx, ngy, ngz))
     p_n = np.zeros((ngx, ngy, ngz))
+
+    u_n += 0.05 * np.random.randn(ngx, ngy, ngz)
+    v_n += 0.05 * np.random.randn(ngx, ngy, ngz)
+    w_n += 0.05 * np.random.randn(ngx, ngy, ngz)
+    p_n += 0.05 * np.random.randn(ngx, ngy, ngz)
     
     # simulation parameters 
     Re = 180 
     num_steps = 1000
     nu = 1.0 / Re 
-    dt = 0.001 
+    dt = 0.005
+    U_bulk = 1.0  * ngz# we want to keep it as 1.0 for now 
 
-    # \grad P + \nu \nabla^2 u = 0 
-    # here u is parabolic velocity profile u(y) = U_max * (1 - y^2/H^2)
-    U_max = 1.0
-    gradP   = (2.0 * nu * U_max) / (H**2) # U_center = 1.0
 
     alpha   = [29/60, -3/40, 1/6]
     beta    = [37/160, 5/24, 1/6]
@@ -283,6 +285,16 @@ if __name__ == '__main__':
             A_solvers[i].append(A_solver) # factorized!
 
 
+    mean_u_b = []
+    for i in range(3): # substeps 
+        # assume unit pressure gradient (1)
+        rhs_unit = np.ones(ngx * ngy) * dt * gamma[i]
+
+        u_unit = A_solvers[i][0].solve(A[i][0], rhs_unit)
+
+        mean_u_unit = np.mean(u_unit.real)
+        mean_u_b.append(mean_u_unit)
+
 
     # pre-allocation 
     viscous_u_old   = np.zeros((ngx, ngy, Nz_fourier), dtype = np.complex128)
@@ -296,6 +308,12 @@ if __name__ == '__main__':
     viscous_u2      = np.zeros((ngx, ngy, Nz_fourier), dtype = np.complex128)
     viscous_v2      = np.zeros((ngx, ngy, Nz_fourier), dtype = np.complex128)
     viscous_w2      = np.zeros((ngx, ngy, Nz_fourier), dtype = np.complex128)
+
+    timesteps = []
+    max_u = []
+    max_v = []
+    max_w = []
+    max_p = []
 
     output_dir = "figures"
     # time-stepping loop 
@@ -325,9 +343,16 @@ if __name__ == '__main__':
             viscous_w_old[:, :, k] = (Laplacian[k] @ w_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
 
+
         rhs_u1_hat = u_old_hat + dt * (alpha[0] * nu * viscous_u_old + gamma[0] * Nu_old)
         rhs_v1_hat = v_old_hat + dt * (alpha[0] * nu * viscous_v_old + gamma[0] * Nv_old)
         rhs_w1_hat = w_old_hat + dt * (alpha[0] * nu * viscous_w_old + gamma[0] * Nw_old)
+
+        u_tilde1_k0 = A_solvers[0][0].solve(A[0][0], rhs_u1_hat[:,:,0].flatten().real) + 1j * A_solvers[0][0].solve(A[0][0], rhs_u1_hat[:,:,0].flatten().imag) 
+                                            
+        U_bulk_curr = np.mean(u_tilde1_k0.real)
+
+        gradP = (U_bulk - U_bulk_curr) / mean_u_b[0]
 
         rhs_u1_hat[:, :, 0] += dt * gradP * gamma[0]
 
@@ -351,20 +376,21 @@ if __name__ == '__main__':
 
         Nu1, Nv1, Nw1 = compute_nonlinear_term(u1_phys, v1_phys, w1_phys, operators)
 
-        viscous_u1 = np.zeros_like(u1_hat)
-        viscous_v1 = np.zeros_like(v1_hat)
-        viscous_w1 = np.zeros_like(w1_hat)
         for k in range(Nz_fourier):
             viscous_u1[:, :, k] = (Laplacian[k] @ u1_hat[:, :, k].flatten()).reshape(ngx, ngy)
             viscous_v1[:, :, k] = (Laplacian[k] @ v1_hat[:, :, k].flatten()).reshape(ngx, ngy)
             viscous_w1[:, :, k] = (Laplacian[k] @ w1_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
-
         rhs_u2_hat = u1_hat + dt * (alpha[1] * nu * viscous_u1  + gamma[1] * Nu1 + zeta[1] * Nu_old)
         rhs_v2_hat = v1_hat + dt * (alpha[1] * nu * viscous_v1  + gamma[1] * Nv1 + zeta[1] * Nv_old)
         rhs_w2_hat = w1_hat + dt * (alpha[1] * nu * viscous_w1  + gamma[1] * Nw1 + zeta[1] * Nw_old)
 
-        # if necessary try to add gradP to u2 zero mode too
+        u_tilde2_k0 = A_solvers[1][0].solve(A[1][0], rhs_u2_hat[:,:,0].flatten().real) + 1j * A_solvers[1][0].solve(A[1][0], rhs_u2_hat[:,:,0].flatten().imag) 
+                                            
+        U_bulk_curr = np.mean(u_tilde2_k0.real)
+
+        gradP = (U_bulk - U_bulk_curr) / mean_u_b[1]
+
         rhs_u2_hat[:, :, 0] += dt * gradP * gamma[1]
 
         u_tilde2_hat, v_tilde2_hat, w_tilde2_hat = predictor_step(rhs_u2_hat, rhs_v2_hat, rhs_w2_hat, operators, nu, dt, A_solvers[1], A[1], wall_idx)
@@ -391,10 +417,15 @@ if __name__ == '__main__':
             viscous_v2[:, :, k] = (Laplacian[k] @ v2_hat[:, :, k].flatten()).reshape(ngx, ngy)
             viscous_w2[:, :, k] = (Laplacian[k] @ w2_hat[:, :, k].flatten()).reshape(ngx, ngy)
 
-
         rhs_u3_hat = u2_hat + dt * (alpha[2] * nu * viscous_u2  + gamma[2] * Nu2 + zeta[2] * Nu1)
         rhs_v3_hat = v2_hat + dt * (alpha[2] * nu * viscous_v2  + gamma[2] * Nv2 + zeta[2] * Nv1)
         rhs_w3_hat = w2_hat + dt * (alpha[2] * nu * viscous_w2  + gamma[2] * Nw2 + zeta[2] * Nw1)
+
+        u_tilde3_k0 = A_solvers[2][0].solve(A[2][0], rhs_u3_hat[:,:,0].flatten().real) + 1j * A_solvers[2][0].solve(A[2][0], rhs_u3_hat[:,:,0].flatten().imag) 
+                                            
+        U_bulk_curr = np.mean(u_tilde3_k0.real)
+
+        gradP = (U_bulk - U_bulk_curr) / mean_u_b[2]
 
         rhs_u3_hat[:, :, 0] += dt * gradP * gamma[2]
 
@@ -416,13 +447,21 @@ if __name__ == '__main__':
         v_n = np.fft.irfft(v3_hat, n = ngz)
         w_n = np.fft.irfft(w3_hat, n = ngz)
         p_n = np.fft.irfft(p3_hat, n = ngz)
+        
+        timesteps.append(n + 1)
+        max_u.append(np.mean(u_n))
+        max_v.append(np.max(np.abs(v_n)))
+        max_w.append(np.max(np.abs(w_n)))
+        max_p.append(np.max(np.abs(p_n)))
 
 
+
+
+        print(f"Step {n+1}: Bulk u-velocity = {np.mean(u_n):.4f}")
 
         end_time = time.perf_counter()
         print(f"Timestep took :{end_time - start_time} seconds")
         if (n + 1) % 10 == 0:
-            print(f"Step {n+1}: Max u-velocity = {np.max(u_n):.4f}")
             plt.figure(figsize = (10,5))
             z_slice = ngz // 2
             plt.pcolormesh(X[:,:,z_slice], Y[:,:,z_slice], u_n[:,:,z_slice], shading = 'gouraud', cmap = 'viridis')
@@ -442,3 +481,25 @@ if __name__ == '__main__':
         # fig.write_html('test.html')
         # stop
 
+    fig, axes = plt.subplots(nrows = 2, ncols = 2, figsize = (14,10))
+
+    ax1 = axes[0,0]
+    ax1.plot(timesteps, max_u)
+    ax1.set_title(' Bulk u velocity')
+
+    ax2 = axes[0,1]
+    ax2.plot(timesteps, max_v)
+    ax2.set_title(' Maximum |v| velocity')
+
+
+    ax3 = axes[1,0]
+    ax3.plot(timesteps, max_w)
+    ax3.set_title(' Maximum |w| velocity')
+
+    ax4 = axes[1,1]
+    ax4.plot(timesteps, max_p)
+    ax4.set_title(' Maximum |p|')
+
+    plt.savefig("maxvals.png", dpi = 300)
+
+    plt.show()
