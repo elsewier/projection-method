@@ -5,7 +5,7 @@ from bspline_module import generate_knots_and_colloc_pts, generate_periodic_knot
 
 def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 2d by default
 
-    is_3d = Nz > 1
+    is_3d = Nz > 0
 
     if is_3d:
         print(f"3D Grid Generation ({Nx}x{Ny}x{Nz})")
@@ -14,11 +14,11 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
 
     # x direction
     xmin, xmax = 0, Lx
-    x_knots, x_colloc = generate_periodic_knots_and_colloc_pts(p, Nx, xmin, xmax)
+    x_knots, x_colloc = generate_periodic_knots_and_colloc_pts(p, Nx, xmin, xmax) #TODO: i need to add periodic x or not check 
 
     # y direction
     ymin, ymax = -H, H
-    y_knots, y_colloc = generate_knots_and_colloc_pts(q, Ny, ymin, ymax, stretch_factor = 0.0)
+    y_knots, y_colloc = generate_knots_and_colloc_pts(q, Ny, ymin, ymax, stretch_factor = stretch_factor)
 
     # z direction
     if Nz > 0:
@@ -53,8 +53,6 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor): # creates 
         'X': X,
         'Y': Y,
         'Z': Z,
-        'wall_indices_y': wall_indices_y,
-        'in_out_indices_x': in_out_indices_x,
         'Nx': Nx, 'Ny': Ny, 'Nz': Nz, 'Nz_fourier': Nz_fourier,
         'Lx': Lx, 'H': H, 'Lz': Lz,
         'kz': kz, 'kz_3d': kz_3d 

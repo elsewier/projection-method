@@ -29,6 +29,7 @@ class BSplineOperator:
 
         self.Dx, self.Dxx = None, None
         self.Dy, self.Dyy = None, None
+        self.M = None
 
         self.precompute_matrices()
 
@@ -93,6 +94,11 @@ class BSplineOperator:
         Dyy_T   = np.linalg.solve(B0y.T, B2y.T)
         self.Dy = Dy_T.T
         self.Dyy= Dyy_T.T
+
+        self.B0x = sp.csr_matrix(B0x)
+        self.B0y = sp.csr_matrix(B0y)
+
+        self.M = sp.kron(self.B0x, self.B0y, format='csr')
 
         # if self.Nz > 1:
         #     Lz = self.grid['Lz']

@@ -6,29 +6,6 @@ import numpy as np
 
 
 def generate_knots_and_colloc_pts(p, num_basis, xmin, xmax, stretch_factor=0.0):
-    """
-    Generates a 1D clamped (non-periodic) knot vector and Greville collocation points.
-
-    Parameters
-    ----------
-    p : int
-        The degree of B-spline basis.
-    num_basis : int
-        The number of basis functions to generate.
-    xmin : float
-        The minimum value of the physical domain.
-    xmax : float
-        The maximum value of the physical domain.
-    stretch_factor : float, optional
-        Stretch factor to create a stretched mesh near the boundary. The default is 0.0.
-
-    Returns
-    -------
-    knots_out : np.ndarray
-        The knot vector of size (num_basis + p + 1).
-    colloc_pts_out : np.ndarray
-        The array of collocation points of size (num_basis).
-    """
 
     m = num_basis + p + 1
     knots_out = np.zeros(m)
@@ -77,9 +54,6 @@ def generate_periodic_knots_and_colloc_pts(p, num_basis, xmin, xmax):
 
 
 def bspline_basis_normalized(j, p, knots, xi, tol=1.e-12):
-    """
-    Computes a B-spline basis function value using the Cox-de Boor recursion.
-    """
     if p == 0:
         # The last interval is closed to include xi=1.0
         if abs(knots[j+1] - 1.0) < tol:
@@ -107,9 +81,6 @@ def bspline_basis_normalized(j, p, knots, xi, tol=1.e-12):
         return term1 + term2
 
 def bspline_deriv1_normalized(j, p, knots, xi, tol=1.e-12):
-    """
-    Computes the first derivative of a B-spline basis function.
-    """
     if p == 0:
         return 0.0
 
@@ -126,9 +97,6 @@ def bspline_deriv1_normalized(j, p, knots, xi, tol=1.e-12):
     return float(p) * (term1 - term2)
 
 def bspline_deriv2_normalized(j, p, knots, xi, tol=1.e-12):
-    """
-    Computes the second derivative of a B-spline basis function.
-    """
     if p <= 1:
         return 0.0
     
@@ -145,34 +113,22 @@ def bspline_deriv2_normalized(j, p, knots, xi, tol=1.e-12):
     return float(p) * (term1 - term2)
 
 def bspline_basis_physical(j, p, knots, x, xmin, xmax):
-    """
-    Wrapper to evaluate basis function in the physical domain.
-    """
     xi = (x - xmin) / (xmax - xmin)
     return bspline_basis_normalized(j, p, knots, xi)
 
 def bspline_deriv1_physical(j, p, knots, x, xmin, xmax):
-    """
-    Wrapper to evaluate the first derivative in the physical domain.
-    """
     L = xmax - xmin
     xi = (x - xmin) / L
     dval_dxi = bspline_deriv1_normalized(j, p, knots, xi)
     return dval_dxi * (1.0 / L)
 
 def bspline_deriv2_physical(j, p, knots, x, xmin, xmax):
-    """
-    Wrapper to evaluate the second derivative in the physical domain.
-    """
     L = xmax - xmin
     xi = (x - xmin) / L
     d2val_dxi2 = bspline_deriv2_normalized(j, p, knots, xi)
     return d2val_dxi2 * (1.0 / L**2)
 
 def find_span(x, p, knots, xmin, xmax):
-    """
-    Finds the knot interval index for a given physical point x.
-    """
     num_basis = len(knots) - p - 1
     xi = (x - xmin) / (xmax - xmin)
     
@@ -202,16 +158,6 @@ class BSplineSurface:
 
 
     def __init__(self, points, p, q, x, y):
-        """
-        Initializes a B-spline surface.
-
-        Args:
-            points: this holds the coordinates of our surface (numbasisu, num_basis_v, dim) for now dim = 2
-            p (int): Degree in the u-direction.
-            q (int): Degree in the v-direction.
-            x( tuple): Physical domain for u, e.g., (umin, umax).
-            y (tuple): Physical domain for v, e.g., (vmin, vmax).
-        """
         self.points = np.array(points)
         self.p = p
         self.q = q
@@ -225,7 +171,7 @@ class BSplineSurface:
         self.x_knots, _ = generate_knots_and_colloc_pts(p, self.num_basis_u, 0., 1.)
         self.y_knots, _ = generate_knots_and_colloc_pts(q, self.num_basis_v, 0., 1.)
 
-    def _evaluate_basis_functions(self, x, y, dx, dy):
+    def evaluate_basis_functions(self, x, y, dx, dy):
 
         # we need to find non-zero basis range 
         x_span = find_span(x, self.p, self.x_knots, self.x[0], self.x[1])
@@ -265,7 +211,7 @@ class BSplineSurface:
     # S(x,y) = sum_i sum_j N_i(x) * M_j(y) * points_ij
     # evaluate function calculates the value in single point
     def evaluate(self, x, y):
-        N_val, M_val, points = self._evaluate_basis_functions(x, y, dx = 0, dy = 0)
+        N_val, M_val, points = self.evaluate_basis_functions(x, y, dx = 0, dy = 0)
 
 
         surface_point = np.zeros(points.shape[2]) # holds the dimension
@@ -280,7 +226,7 @@ class BSplineSurface:
         if dx == 0 and dy == 0:
             return self.evaluate(x, y)
 
-        N_val, M_val, points = self._evaluate_basis_functions(x, y, dx = 0, dy = 0)
+        N_val, M_val, points = self.evaluate_basis_functions(x, y, dx = 0, dy = 0)
 
         derivative_vec = np.zeros(points.shape[2]) 
         
