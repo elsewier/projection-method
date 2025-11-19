@@ -211,7 +211,7 @@ def massflux_correction(u_phys, y_coords, U_bulk_target, dt):
 if __name__ == '__main__':
     p = 7 
     q = 7 
-    ngx = 64
+    ngx = 128
     ngy = 96
     ngz = 1
 
@@ -219,7 +219,7 @@ if __name__ == '__main__':
     Lx = 4.0 * np.pi 
     dx = Lx / ngx
     H = 1
-    Lz = 1.0 * np.pi / 4
+    Lz = 2.0 * np.pi 
 
     grid = create_channel_grid(Nx = ngx, Ny = ngy, Nz = ngz, Lx = Lx,H = H, Lz = Lz, p = p, q = q, stretch_factor = 2.0, periodic_x=True)
     operators = BSplineOperator(grid, p = p, q = q, periodic_x = True)
