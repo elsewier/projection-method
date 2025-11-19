@@ -154,12 +154,14 @@ def correction_step(u_tilde_hat, v_tilde_hat, w_tilde_hat, ops, dt, Poisson_matr
 
         pardiso_solver = Poisson_solver[k]
 
+        rhs_p_k[wall_idx] = 0.0 # Neumann on RHS
+
         if k ==0:
-            rhs_p_k[wall_idx] = 0.0 # Neumann on RHS
+            rhs_p_k[wall_idx] = (1/dt) * v_tilde_k.flatten()[wall_idx]
             rhs_p_k -= np.mean(rhs_p_k)
             rhs_p_k[0] = 0.0 # pinning pressure on RHS
-        else:
-            rhs_p_k = apply_dirichlet_rhs(rhs_p_k, wall_idx, val = 0.0)
+        # else:
+        #     rhs_p_k = apply_dirichlet_rhs(rhs_p_k, wall_idx, val = 0.0)
 
         phi_k = pardiso_solver.solve(P, rhs_p_k.real) + 1j * pardiso_solver.solve(P, rhs_p_k.imag)
 
@@ -198,7 +200,7 @@ def massflux_correction(u_phys, y_coords, U_bulk_target, dt):
     u_y = np.mean(u_phys, axis = (0, 2))
     U_bulk_curr = np.trapezoid(u_y, y_coords) / (y_coords[-1] - y_coords[0])
 
-    dp_dx = (U_bulk_target - U_bulk_curr) / dt 
+    dp_dx = 0.1 * (U_bulk_target - U_bulk_curr) / dt  # i added 0.1 to reduce overshoot problem
 
     print(f"U_current = {U_bulk_curr:.6f}, U_target = {U_bulk_target:.6f}")
     print(f"Required dp/dx = {dp_dx:.6f}")
@@ -210,19 +212,20 @@ if __name__ == '__main__':
     p = 7 
     q = 7 
     ngx = 64
-    ngy = 128
+    ngy = 96
     ngz = 1
 
 
     Lx = 4.0 * np.pi 
     dx = Lx / ngx
-    H = 0.5
+    H = 1
     Lz = 1.0 * np.pi / 4
 
-    grid = create_channel_grid(Nx = ngx, Ny = ngy, Nz = ngz, Lx = Lx,H = H, Lz = Lz, p = p, q = q, stretch_factor = 2.0)
+    grid = create_channel_grid(Nx = ngx, Ny = ngy, Nz = ngz, Lx = Lx,H = H, Lz = Lz, p = p, q = q, stretch_factor = 2.0, periodic_x=True)
     operators = BSplineOperator(grid, p = p, q = q, periodic_x = True)
 
     y_coords = grid['Y'][0, :, 0]
+    print(y_coords[0:10])
 
     Nz_fourier = grid['Nz_fourier']
     # initial conditions 
@@ -235,18 +238,17 @@ if __name__ == '__main__':
     w_n = np.zeros((ngx, ngy, ngz))
     p_n = np.zeros((ngx, ngy, ngz))
 
-    # u_n += 0.05 * np.random.randn(ngx, ngy, ngz)
-    # v_n += 0.05 * np.random.randn(ngx, ngy, ngz)
-    # w_n += 0.05 * np.random.randn(ngx, ngy, ngz)
-    # p_n += 0.05 * np.random.randn(ngx, ngy, ngz)
+    u_n += 0.01 * np.random.randn(ngx, ngy, ngz) * (1 - (Y / H)**2)
+    # v_n += 0.01 * np.random.randn(ngx, ngy, ngz) * (1 - (Y / H)**2)
+    # w_n += 0.01 * np.random.randn(ngx, ngy, ngz) * (1 - (Y / H)**2)
     
     # simulation parameters 
     Re = 180 
-    num_steps = 10
+    num_steps = 1500
     nu = 1.0 / Re 
     dt = 0.001
     U_bulk_phys = 1.0
-    U_bulk = 1.0  * ngz# we want to keep it as 1.0 for now 
+    U_bulk = 1.0  * ngz 
 
 
     alpha   = [29/60, -3/40, 1/6]
@@ -272,11 +274,9 @@ if __name__ == '__main__':
         Laplacian.append(Laplacian_.tocsr())
         
 
+        Laplacian_bc, _ = apply_neumann(Laplacian_, np.zeros(ngx * ngy), wall_idx, operators)
         if k == 0:
-            Laplacian_bc, _ = apply_neumann(Laplacian_, np.zeros(ngx * ngy), wall_idx, operators)
             Laplacian_bc, _ = pin_pressure(Laplacian_bc, np.zeros(ngx * ngy), 0)
-        else:
-            Laplacian_bc, _ = apply_dirichlet(Laplacian_, np.zeros(ngx * ngy), wall_idx, val = 0.0)
 
         Poisson.append(Laplacian_bc.tocsr())
 
@@ -340,7 +340,6 @@ if __name__ == '__main__':
         # assemble RHS 
 
         for k in range(Nz_fourier):
-            # Laplacian = build_P(operators, operators.kz[k]) # NOTE: 
             viscous_u_old[:, :, k] = (Laplacian[k] @ u_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
             viscous_v_old[:, :, k] = (Laplacian[k] @ v_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
             viscous_w_old[:, :, k] = (Laplacian[k] @ w_old_hat[:, :, k].flatten()).reshape(ngx, ngy)
@@ -462,6 +461,7 @@ if __name__ == '__main__':
         print(f"Max divergence: {max_div:.2e}")
 
         # u_vel is the parabolic velocity profile 
+        u_vel = 1.5 * 1.0 * (1 - (Y / H)**2) # 1.0 is U_bulk target and U_bulk = (2/3) * U_max
         rel_err = np.linalg.norm(u_n - u_vel) / np.linalg.norm(u_vel)
         inf_norm = np.max(np.abs(u_n - u_vel)) / np.max(np.abs(u_vel))
         print(f"Relative Error :{rel_err}")
@@ -493,17 +493,25 @@ if __name__ == '__main__':
         # fig.write_html('test.html')
         # stop
 
-    fig, axes = plt.subplots(nrows = 1, ncols = 2)
+    fig, axes = plt.subplots(nrows = 1, ncols = 2, figsize=(14,6))
 
     # ax1 = axes[0,0]
+    xx = np.array(timesteps) * dt
     ax1 = axes[0]
-    ax1.plot(timesteps, div_res)
-    ax1.set_title('Max divergence')
+    ax1.plot(xx, div_res, linewidth = 2)
+    ax1.set_yscale('log')
+    ax1.set_title('Max divergence history', fontsize = 14)
+    ax1.set_xlabel('Time ($t$)', fontsize=14)
+    ax1.grid(True,linewidth=0.5, alpha=0.5)
 
     # ax2 = axes[0,1]
     ax2 = axes[1]
-    ax2.plot(timesteps,inf_err)
-    ax2.set_title('Infinity Norm Error')
+    ax2.plot(xx,inf_err, linewidth = 2)
+    ax2.set_title('Velocity Error (Infinity Norm)', fontsize=14)
+    ax2.set_xlabel('Time ($t$)', fontsize=14)
+    ax2.grid(True,linewidth=0.5, alpha=0.5)
+    plt.tight_layout()
+
 
 
     # ax3 = axes[1,0]
@@ -532,8 +540,8 @@ if __name__ == '__main__':
     plt.figure(figsize=(8, 8))
     plt.plot(exact_u_profile, y_coords, 'r-', label='Parabolic Profile', linewidth=3)
     plt.plot(final_u_profile, y_coords, 'b--o', label='Numerical Profile', markersize=4)
-    plt.xlabel('u-velocity')
-    plt.ylabel('y-coordinate')
+    plt.xlabel('u-velocity', fontsize=14)
+    plt.ylabel('y-coordinate', fontsize=14)
     plt.legend()
     plt.grid(True)
     plt.savefig("profile_comparison.png", dpi=300)

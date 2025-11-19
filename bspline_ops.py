@@ -39,10 +39,15 @@ class BSplineOperator:
         x_colloc = self.grid['x_colloc']
         knots_x = self.grid['x_knots']
 
+        # print(x_colloc[:10])
+        print(knots_x[:10])
+        print(knots_x[-10:])
+
         ymin, ymax = -self.grid['H'], self.grid['H']
         y_colloc = self.grid['y_colloc']
         knots_y = self.grid['y_knots']
 
+        # print(y_colloc[:10])
 
         B0x = np.zeros((self.Nx, self.Nx))
         B1x = np.zeros((self.Nx, self.Nx))
@@ -53,7 +58,7 @@ class BSplineOperator:
         B2y = np.zeros((self.Ny, self.Ny))
 
 
-        if not self.periodic_x:
+        if self.periodic_x == False:
             for i in range(self.Nx):
                 for j in range(self.Nx):
                     B0x[i,j] = bspline_basis_physical(j, self.p, knots_x, x_colloc[i], xmin, xmax)
@@ -74,7 +79,7 @@ class BSplineOperator:
                     b2_val = bspline_deriv2_physical(j, self.p, knots_x, xi, xmin, xmax) \
                             + bspline_deriv2_physical(j, self.p, knots_x, xi - self.grid['Lx'], xmin, xmax) \
                             + bspline_deriv2_physical(j, self.p, knots_x, xi + self.grid['Lx'], xmin, xmax) 
-                    
+
                     B0x[i, j] = b0_val
                     B1x[i, j] = b1_val
                     B2x[i, j] = b2_val
@@ -95,10 +100,24 @@ class BSplineOperator:
         self.Dy = Dy_T.T
         self.Dyy= Dyy_T.T
 
-        self.B0x = sp.csr_matrix(B0x)
-        self.B0y = sp.csr_matrix(B0y)
+        cond_B0x = np.linalg.cond(B0x)
+        cond_B0y = np.linalg.cond(B0y)
+        print(f"Condition number of B0x: {cond_B0x}")
+        print(f"Condition number of B0y: {cond_B0y}")
+        cond_Dx = np.linalg.cond(self.Dx)
+        cond_Dy = np.linalg.cond(self.Dy)
+        cond_Dxx = np.linalg.cond(self.Dxx)
+        cond_Dyy = np.linalg.cond(self.Dyy)
+        print(f"Condition number of Dx: {cond_Dx}")
+        print(f"Condition number of Dy: {cond_Dy}")
+        print(f"Condition number of Dxx: {cond_Dxx}")
+        print(f"Condition number of Dyy: {cond_Dyy}")
 
-        self.M = sp.kron(self.B0x, self.B0y, format='csr')
+        print("B0x row sums:", np.max(np.abs(B0x.sum(axis=1) ))) # should be around 1 
+        print("B1x row sums:", np.max(np.abs(B1x.sum(axis=1) ))) # should be around 0 
+        print("B0y row sums:", np.max(np.abs(B0y.sum(axis=1) ))) # should be around 1 
+        print("B1y row sums:", np.max(np.abs(B1y.sum(axis=1) ))) # should be around 0 
+
 
         # if self.Nz > 1:
         #     Lz = self.grid['Lz']

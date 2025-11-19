@@ -15,14 +15,22 @@ def generate_knots_and_colloc_pts(p, num_basis, xmin, xmax, stretch_factor=0.0):
     knots_out[num_basis:] = 1.0
 
     # Interior knots
+
     for i in range(p + 1, num_basis):
         s = float(i - p) / float(num_basis - p)
         if abs(stretch_factor) < 1.0e-12:
-            # Uniform spacing
+        # Uniform spacing
             knots_out[i] = s
         else:
             # Tanh stretching
-            knots_out[i] = 0.5 * (np.tanh(stretch_factor * (2.0 * s - 1.0)) + 1.0)
+            knots_out[i] = 0.5 * (1 + np.tanh(stretch_factor * (2.0 * s - 1.0) / np.tanh(stretch_factor)))
+
+            # sine stretching 
+            # num_interior = num_basis - p - 1 
+            # s = np.linspace(0, 1, num_interior + 2)[1:-1] # uniform points in [0, 1]
+            # xi = 2.0 * s - 1.0 # map to [-1, 1]
+            # knots_out[p + 1:num_basis] = ((np.sin(stretch_factor * xi * np.pi / 2.0) / (np.sin(stretch_factor * np.pi / 2.0))) + 1.0) / 2.0 
+
 
     # Greville collocation points
     colloc_norm = np.zeros(num_basis)
@@ -31,8 +39,6 @@ def generate_knots_and_colloc_pts(p, num_basis, xmin, xmax, stretch_factor=0.0):
 
     # Map to physical domain
     colloc_pts_out = xmin + colloc_norm * (xmax - xmin)
-    colloc_pts_out[0] = xmin
-    colloc_pts_out[-1] = xmax
     
     return knots_out, colloc_pts_out
 
@@ -41,11 +47,12 @@ def generate_periodic_knots_and_colloc_pts(p, num_basis, xmin, xmax):
     knots_out = np.zeros(m)
 
     uniform_knots = np.linspace(0, 1, num_basis + 1)
-    knots_out = np.arange(-p, num_basis + 1) * (1.0 / num_basis)
+    knots_out = np.arange(-p, num_basis + 1, dtype = np.float64) / num_basis
 
     colloc_norm = np.zeros(num_basis)
     for i in range(num_basis):
         colloc_norm[i] = np.sum(knots_out[i+1:i+p+1]) / float(p)
+    
 
     colloc_pts_out = xmin + colloc_norm * (xmax - xmin)
 
@@ -77,8 +84,9 @@ def bspline_basis_normalized(j, p, knots, xi, tol=1.e-12):
         d2 = knots[j+p+1] - knots[j+1]
         if abs(d2) > tol:
             term2 = (knots[j+p+1] - xi) / d2 * bspline_basis_normalized(j+1, p-1, knots, xi, tol)
-            
+
         return term1 + term2
+
 
 def bspline_deriv1_normalized(j, p, knots, xi, tol=1.e-12):
     if p == 0:
@@ -132,11 +140,9 @@ def find_span(x, p, knots, xmin, xmax):
     num_basis = len(knots) - p - 1
     xi = (x - xmin) / (xmax - xmin)
     
-    # Handle the right endpoint explicitly
     if np.isclose(xi, 1.0):
         return num_basis - 1
     
-    # Use binary search for efficiency
     low = p
     high = num_basis
     mid = (low + high) // 2
@@ -163,8 +169,8 @@ class BSplineSurface:
         self.q = q
         self.x = x
         self.y = y
-        self.num_basis_u = self.control_points.shape[0]
-        self.num_basis_v = self.control_points.shape[1]
+        self.num_basis_u = self.points.shape[0]
+        self.num_basis_v = self.points.shape[1]
         self.dim = self.control_points.shape[2]
 
         # first generate knots and colloc points 
@@ -202,8 +208,8 @@ class BSplineSurface:
             N_val[i] = x_func(j, self.p, self.x_knots, x, self.x[0], self.x[1])
 
         for j in range(self.q + 1):
-            j = y_span - self.q + i 
-            M_val[i] = y_func(j, self.q, self.y_knots, y, self.y[0], self.x[1])
+            j = y_span - self.q + j 
+            M_val[i] = y_func(j, self.q, self.y_knots, y, self.y[0], self.y[1])
 
         return N_val, M_val, points 
 
