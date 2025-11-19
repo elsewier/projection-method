@@ -76,7 +76,19 @@ def apply_dirichlet(A, b, idx, val = 0.0):
 
     return A_csr, b 
 
-def apply_neumann(A, b, boundary_indices, ops):
+def apply_dirichlet_rhs(b, idx, val = 0.0):
+    # only modifies the rhs vector 
+    
+    for i in range(idx.shape[0]):
+        k = int(idx[i])
+        if np.isscalar(val) == 1:
+            b[k] = val
+        else:
+            b[k] = val[i]
+
+    return b 
+
+def apply_neumann(A, b, boundary_indices, ops, rhs_vals = None):
     # du/dn = 0 
     Nx = ops.Nx
     Ny = ops.Ny
@@ -86,24 +98,27 @@ def apply_neumann(A, b, boundary_indices, ops):
 
     A_lil = A.tolil()
 
-    for idx in boundary_indices: 
-        i = idx // Ny 
-        j = idx % Ny 
+    if rhs_vals is None:
+        rhs_vals = np.zeros(len(boundary_indices))
+
+    for i, idx in enumerate(boundary_indices): 
+        row = idx // Ny 
+        col = idx % Ny 
 
         # bottom or top wall, normal direction is y 
-        if j == 0 or j == Ny - 1: 
-            start   = Dy_s.indptr[j]
-            end     = Dy_s.indptr[j + 1]
+        if col == 0 or col == Ny - 1: 
+            start   = Dy_s.indptr[col]
+            end     = Dy_s.indptr[col + 1]
             cols_y  = Dy_s.indices[start:end]
             vals_y  = Dy_s.data[start:end]
 
-            A_lil.rows[idx] = list(i * Ny + cols_y)
+            A_lil.rows[idx] = list(row * Ny + cols_y)
             A_lil.data[idx] = list(vals_y)
 
         # left or right, normal direction is x 
-        elif i == 0 or i == Nx - 1:
-            start   = Dx_s.indptr[j]
-            end     = Dx_s.indptr[j + 1]
+        elif row == 0 or row == Nx - 1:
+            start   = Dx_s.indptr[row]
+            end     = Dx_s.indptr[row + 1]
             cols_x  = Dx_s.indices[start:end]
             vals_x  = Dx_s.data[start:end]
 
