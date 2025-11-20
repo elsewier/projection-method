@@ -19,6 +19,9 @@ def create_channel_grid(Nx, Ny, Nz, Lx, H, Lz, p, q, stretch_factor,periodic_x=F
     ymin, ymax = -H, H
     y_knots, y_colloc = generate_knots_and_colloc_pts(q, Ny, ymin, ymax, stretch_factor = stretch_factor)
 
+    dy_wall = np.abs(y_colloc[0] - y_colloc[1])
+    print(f"dy_wall: {dy_wall:.5f}")
+
     # z direction
     z_colloc = np.linspace(0, Lz, Nz, endpoint = False) # endpoint false excludes the last point
     dz = Lz / Nz 

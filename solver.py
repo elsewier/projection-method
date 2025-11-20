@@ -200,10 +200,9 @@ def massflux_correction(u_phys, y_coords, U_bulk_target, dt):
     u_y = np.mean(u_phys, axis = (0, 2))
     U_bulk_curr = np.trapezoid(u_y, y_coords) / (y_coords[-1] - y_coords[0])
 
-    dp_dx = 0.1 * (U_bulk_target - U_bulk_curr) / dt  # i added 0.1 to reduce overshoot problem
+    dp_dx = (U_bulk_target - U_bulk_curr) / dt  
 
-    print(f"U_current = {U_bulk_curr:.6f}, U_target = {U_bulk_target:.6f}")
-    print(f"Required dp/dx = {dp_dx:.6f}")
+    print(f"U_current = {U_bulk_curr:.6f}, U_target = {U_bulk_target:.6f},Required dp/dx = {dp_dx:.6f}")
 
     return dp_dx
 
